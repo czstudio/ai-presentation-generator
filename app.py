@@ -79,26 +79,31 @@ Data: null
 现在，请分析用户上传的这份学术文档。严格遵循以上所有规则和**"无图化设计"原则，为其生成一份完整的、逻辑清晰的、强调使用简单符号和CSS**进行视觉呈现的学术演示文稿大纲。请开始。
 """
 
-# ## 代码生成器 (终极版 - 只生成<section>块，并强调使用样式) ##
+# ## 代码融合器 (终极强化版 - 基于您成功的原始流程) ##
 CODE_GENERATION_PROMPT_TEMPLATE = """
 角色 (Role):
-你是一位精通HTML的前端开发专家，拥有像素级的代码保真能力。你的核心任务是根据一份结构化的Markdown大纲，为每一页幻灯片生成对应的、**带有正确CSS类的** HTML `<section>` 元素。
+你是一位精通HTML、CSS和JavaScript的前端开发专家，拥有像素级的代码保真能力。你的核心任务是将一份结构化的Markdown大纲，无损地、精确地与一个预定义的HTML模板相结合，动态生成最终的、可直接运行的、高度专业的HTML文件。
 
-关键指令:
-1.  **应用模板样式:** 在生成代码时，你必须分析大纲内容，并应用HTML模板中可能存在的CSS类，例如 `.slide`, `.title-slide`, `.research-card`, `.citation-block`, `.stat-card-grid`, `.scroll-reveal` 等，以确保最终样式正确。例如，封面页应该使用 `<section class="slide title-slide" ...>`。
-2.  **只生成幻灯片内容:** 你的输出必须 **只包含** `<section>...</section>` 代码块的序列。
-3.  **禁止额外代码:** 绝对不要包含 `<html>`, `<body>`, `<head>`, `<!DOCTYPE>`, 或 `<script>` 标签。
-4.  **输出纯净:** 你的输出应该直接以 `<section ...>` 开始，并以 `</section>` 结束。
+核心任务 (Core Task):
+你将收到两份输入：
+1.  **PPT大纲 (PPT Outline):** 一份结构化的Markdown文件。
+2.  **HTML模板 (HTML Template):** 一个完整的、包含所有CSS和JavaScript的HTML文件。
 
-输入:
-你将收到一份PPT大纲 (PPT Outline)。
+你的任务是：
+1.  **读取并理解模板:** 完整地分析HTML模板的结构，特别是`<main>`标签内的幻灯片占位内容，以及`<head>`中的`<style>`和`<body>`末尾的`<script>`。
+2.  **智能替换内容:** 在你的处理逻辑中，你需要移除模板`<main>`标签内部原有的所有`<section class="slide">...</section>`占位幻灯片。然后，根据PPT大纲的内容，生成新的、**应用了正确CSS类**（例如，通过模仿模板中已有的 `.title-slide`, `.research-card` 等样式）的`<section>`幻灯片，并将它们插入到`<main>`标签内。
+3.  **【最高优先级 - 铁律】:** 在生成最终的完整HTML文件时，你必须 **逐字逐句、完整无误地保留** HTML模板中 **除了`<main>`内部幻灯片内容之外的所有部分**。这包括但不限于：
+    *   整个`<head>`标签，包含所有的`<link>`和`<style>`。
+    *   整个`<script>`标签及其内部所有的JavaScript代码。
+    *   所有的导航控件、页码指示器等非幻灯片内容。
+    *   所有`<img>`标签及其`src`属性，尤其是Base64编码的图片。
+4.  **【绝对禁止】:** 你的最终输出 **绝对不能** 包含任何解释性文字或Markdown代码块标记。输出必须是一个纯粹的HTML文本，直接以 `<!DOCTYPE html>` 开头，并以 `</html>` 结尾。
 
-任务:
-请立即开始工作，将以下这份大纲转化为一系列应用了正确样式的、连续的HTML `<section>` 代码块。
+指令 (Instruction):
+以下是用户提供的 **PPT大纲 (PPT Outline)** 和 **HTML模板 (HTML Template)**。请立即开始工作，严格遵循以上所有规则，特别是保护脚本和样式的铁律，将大纲内容与模板代码完美融合，生成最终的、完整的、专业级的HTML文件。
 """
 
-
-# --- 所有Agent函数 ---
+# --- 所有Agent函数 (保持健壮) ---
 def parse_pdf(uploaded_file, debug_log_container):
     try:
         file_bytes = uploaded_file.getvalue()
@@ -106,8 +111,7 @@ def parse_pdf(uploaded_file, debug_log_container):
         full_text = "".join(page.get_text() + "\n" for page in doc)
         debug_log_container.write(f"✅ PDF解析成功。总计 {len(full_text):,} 个字符。")
         return full_text
-    except Exception as e:
-        st.error(f"PDF解析失败: {e}")
+    except Exception:
         debug_log_container.error(f"PDF解析时出现异常: {traceback.format_exc()}")
         return None
 
@@ -122,7 +126,7 @@ def validate_model(api_key, model_name, debug_log_container):
         else:
             st.error(f"**模型验证失败!** `{model_name}` 不存在。")
             return False
-    except Exception as e:
+    except Exception:
         st.error(f"**API Key验证失败!**")
         debug_log_container.error(f"验证API Key时异常: {traceback.format_exc()}")
         return False
@@ -148,8 +152,8 @@ def call_gemini(api_key, prompt_text, ui_placeholder, model_name, debug_log_cont
         full_response_str = "".join(collected_chunks)
         debug_log_container.write(f"✅ AI流式响应成功完成。收集到 {len(full_response_str):,} 个字符。")
         return full_response_str
-    except Exception as e:
-        ui_placeholder.error(f"🚨 **AI调用失败!**\n\n`{e}`")
+    except Exception:
+        ui_placeholder.error(f"🚨 **AI调用失败!** 请检查调试日志。")
         debug_log_container.error(f"--- AI调用时发生严重错误 ---\n{traceback.format_exc()}")
         return None
 
@@ -167,38 +171,38 @@ def extract_clean_outline(raw_output, debug_log_container):
             debug_log_container.warning("⚠️ 提取出的大纲结构不完整。")
         debug_log_container.success(f"✅ 已智能识别并提取出大纲内容。")
         return cleaned_outline
-    except Exception as e:
+    except Exception:
         debug_log_container.error(f"提取大纲时发生意外错误: {traceback.format_exc()}")
         return None
 
-# ## NEW: 清理AI生成的HTML代码块，移除“废话”和代码标记 ##
-def clean_generated_html(raw_html, debug_log_container):
+# ## NEW: 终极清理函数，移除所有AI可能添加的无关内容 ##
+def final_cleanup(raw_html, debug_log_container):
     """
-    清理AI生成的HTML代码，移除任何前导文本和Markdown代码块标记。
+    对最终的HTML进行强力清理，确保它是一个纯净的HTML文档。
     """
     try:
-        # 寻找第一个<section>标签的开始位置
-        first_section_pos = raw_html.find("<section")
-        if first_section_pos == -1:
-            debug_log_container.error("❌ AI生成的代码中不包含任何`<section>`标签。")
-            return None
+        # 1. 寻找HTML的真正起点
+        html_start_pos = raw_html.find("<!DOCTYPE html>")
+        if html_start_pos == -1:
+            debug_log_container.warning("⚠️ AI返回的最终结果缺少`<!DOCTYPE html>`声明，可能不完整。")
+            # 即使找不到，也尝试清理其他部分
+            html_start_pos = 0 
         
-        # 从第一个<section>开始，截取所有后续内容
-        cleaned_html = raw_html[first_section_pos:]
+        # 截取从<!DOCTYPE html>开始的所有内容
+        html_content = raw_html[html_start_pos:]
         
-        # 移除可能存在的Markdown代码块标记
-        cleaned_html = cleaned_html.replace("```html", "").replace("```", "").strip()
+        # 2. 移除Markdown代码块标记
+        cleaned_html = html_content.replace("```html", "").replace("```", "").strip()
         
-        debug_log_container.success("✅ 已清理AI生成的幻灯片HTML内容。")
+        debug_log_container.success("✅ 已对最终HTML进行清理。")
         return cleaned_html
-    except Exception as e:
-        debug_log_container.error(f"清理生成的HTML时出错: {traceback.format_exc()}")
-        return None
-
+    except Exception:
+        debug_log_container.error(f"最终清理时出错: {traceback.format_exc()}")
+        return raw_html # 清理失败时返回原始文本
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="AI学术汇报生成器", page_icon="🎓", layout="wide")
-st.title("🎓 AI学术汇报一键生成器 (最终版)")
+st.title("🎓 AI学术汇报一键生成器 (终极版)")
 with st.sidebar:
     st.header("⚙️ 配置")
     api_key = st.text_input("请输入您的Google Gemini API Key", type="password")
@@ -216,7 +220,7 @@ with col2: html_template = st.file_uploader("2. 上传您的**原始**HTML模板
 
 if 'final_html' not in st.session_state: st.session_state.final_html = None
 
-# --- 主流程 (采用最终的“智能热替换”逻辑) ---
+# --- 主流程 (回归您成功的原始逻辑) ---
 if st.button("🚀 开始生成汇报", use_container_width=True, disabled=(not api_key or not pdf_file or not html_template)):
     st.session_state.final_html = None
     progress_container = st.container()
@@ -225,8 +229,6 @@ if st.button("🚀 开始生成汇报", use_container_width=True, disabled=(not 
     
     with st.expander("🐞 **调试日志 (点击展开查看详细流程)**", expanded=True):
         debug_log_container = st.container()
-
-    total_start_time = time.time()
 
     if not validate_model(api_key, selected_model, debug_log_container): st.stop()
     progress_bar.progress(5)
@@ -244,49 +246,41 @@ if st.button("🚀 开始生成汇报", use_container_width=True, disabled=(not 
             progress_bar.progress(60)
             outline_placeholder.empty()
 
+            progress_text.text(f"步骤 2/3: 正在智能识别并清洗大纲...")
             cleaned_outline = extract_clean_outline(markdown_outline, debug_log_container)
+
             if cleaned_outline:
                 progress_bar.progress(70)
                 
-                progress_text.text(f"步骤 2/3: 正在生成带有样式的幻灯片内容...")
-                prompt_for_sections = "".join([CODE_GENERATION_PROMPT_TEMPLATE, "\n\n--- PPT Outline ---\n", cleaned_outline])
-                sections_placeholder = st.empty()
-                generated_slides_html_raw = call_gemini(api_key, prompt_for_sections, sections_placeholder, selected_model, debug_log_container)
+                progress_text.text(f"步骤 3/3: 正在融合大纲与模板生成最终文件...")
+                st.info("ℹ️ AI正在执行最终的全文重写，这可能需要一些时间...")
+                template_code = html_template.getvalue().decode("utf-8")
+                
+                final_prompt = "".join([
+                    CODE_GENERATION_PROMPT_TEMPLATE, 
+                    "\n\n--- PPT Outline ---\n", 
+                    cleaned_outline, 
+                    "\n\n--- HTML Template ---\n", 
+                    template_code
+                ])
+                
+                final_placeholder = st.empty()
+                final_html_raw = call_gemini(api_key, final_prompt, final_placeholder, selected_model, debug_log_container)
 
-                if generated_slides_html_raw:
-                    progress_bar.progress(85)
-                    sections_placeholder.empty()
-
+                if final_html_raw:
                     # ## 这是修复所有问题的核心步骤 ##
-                    progress_text.text(f"步骤 3/3: 正在清理并智能组装最终文件...")
-                    
-                    # 1. 清理AI生成的代码，移除“废话”
-                    generated_slides_html = clean_generated_html(generated_slides_html_raw, debug_log_container)
+                    final_html_code = final_cleanup(final_html_raw, debug_log_container)
 
-                    if generated_slides_html:
-                        # 2. 读取原始模板，执行“热替换”
-                        template_code = html_template.getvalue().decode("utf-8")
-                        try:
-                            # 3. 用Python进行100%可靠的替换，保留所有脚本和样式
-                            final_html_code = re.sub(
-                                r'(<main[^>]*>)(.*?)(</main>)', 
-                                lambda m: f"{m.group(1)}\n{generated_slides_html}\n{m.group(3)}",
-                                template_code, 
-                                count=1, 
-                                flags=re.DOTALL | re.IGNORECASE
-                            )
-                            if final_html_code == template_code: raise ValueError("未能在模板中找到<main>标签对进行替换。")
-
-                            debug_log_container.success(f"✅ 最终HTML组装成功！")
-                            st.session_state.final_html = final_html_code
-                            progress_text.text(f"🎉 全部完成！")
-                            progress_bar.progress(100)
-                        except Exception as e:
-                            st.error(f"智能组装文件时出错: {e}")
+                    if "</html>" in final_html_code.lower():
+                        debug_log_container.success(f"✅ 最终HTML生成并清理成功！")
+                        st.session_state.final_html = final_html_code
+                        progress_text.text(f"🎉 全部完成！")
+                        progress_bar.progress(100)
+                        final_placeholder.empty()
                     else:
-                        st.error("清理AI生成的HTML内容后为空，无法继续。")
+                        st.error("AI未能生成有效的最终HTML文件。请检查调试日志。")
                 else:
-                    st.error("AI未能生成有效的幻灯片HTML内容。")
+                    st.error("AI未能生成最终HTML内容。")
             else:
                 st.error("无法从AI响应中提取出有效的大纲。")
 
