@@ -5,7 +5,9 @@ import traceback
 import time
 import re
 
-# --- 提示词模板 (保持不变) ---
+# --- 提示词模板 ---
+
+# ## 大纲生成器 (保持不变) ##
 OUTLINE_GENERATION_PROMPT_TEMPLATE = """
 角色 (Role):
 你是一位顶级的学术汇报设计师和内容策略师，同时具备出色的**"无图化设计" (Graphic-less Design)** 思维。你精通将复杂的学术论文转化为结构化、视觉化的演示文稿（PPT），并且擅长使用CSS样式、布局和文本符号来创造清晰、优雅的视觉效果，以最大限度地减少对外部图片或复杂SVG的依赖。
@@ -146,14 +148,25 @@ def call_gemini(api_key, prompt_text, ui_placeholder, model_name, debug_log_cont
                     collected_chunks.append(text_part)
                     yield text_part
 
-        response_stream = model.generate_content(prompt_text, stream=True)
-        ui_placeholder.write_stream(stream_and_collect(response_stream))
+        # 只有在提供了UI占位符时才进行流式写入
+        if ui_placeholder:
+            response_stream = model.generate_content(prompt_text, stream=True)
+            ui_placeholder.write_stream(stream_and_collect(response_stream))
+        else:
+            # 如果不提供UI占位符，则直接生成，避免在UI上产生不必要的输出
+            response = model.generate_content(prompt_text)
+            if hasattr(response, 'text'):
+                collected_chunks.append(response.text)
         
         full_response_str = "".join(collected_chunks)
-        debug_log_container.write(f"✅ AI流式响应成功完成。收集到 {len(full_response_str):,} 个字符。")
+        debug_log_container.write(f"✅ AI响应成功完成。收集到 {len(full_response_str):,} 个字符。")
         return full_response_str
-    except Exception:
-        ui_placeholder.error(f"🚨 **AI调用失败!** 请检查调试日志。")
+    except Exception as e:
+        error_message = f"🚨 **AI调用失败!** 请检查调试日志。\n\n**错误详情:** {e}"
+        if ui_placeholder:
+            ui_placeholder.error(error_message)
+        else:
+            st.error(error_message)
         debug_log_container.error(f"--- AI调用时发生严重错误 ---\n{traceback.format_exc()}")
         return None
 
@@ -184,17 +197,19 @@ def final_cleanup(raw_html, debug_log_container):
         # 1. 寻找HTML的真正起点
         html_start_pos = raw_html.find("<!DOCTYPE html>")
         if html_start_pos == -1:
-            debug_log_container.warning("⚠️ AI返回的最终结果缺少`<!DOCTYPE html>`声明，可能不完整。")
-            # 即使找不到，也尝试清理其他部分
-            html_start_pos = 0 
+            debug_log_container.warning("⚠️ AI返回的最终结果缺少`<!DOCTYPE html>`声明，将尝试寻找`<html>`标签。")
+            html_start_pos = raw_html.find("<html")
+            if html_start_pos == -1:
+                 debug_log_container.error("❌ AI返回的结果中连`<html>`都找不到，无法清理。")
+                 return None
         
-        # 截取从<!DOCTYPE html>开始的所有内容
+        # 2. 截取从HTML真正起点开始的所有内容
         html_content = raw_html[html_start_pos:]
         
-        # 2. 移除Markdown代码块标记
+        # 3. 移除可能存在的Markdown代码块标记
         cleaned_html = html_content.replace("```html", "").replace("```", "").strip()
         
-        debug_log_container.success("✅ 已对最终HTML进行清理。")
+        debug_log_container.success("✅ 已对最终HTML进行清理，移除了所有前导无关内容。")
         return cleaned_html
     except Exception:
         debug_log_container.error(f"最终清理时出错: {traceback.format_exc()}")
@@ -202,16 +217,11 @@ def final_cleanup(raw_html, debug_log_container):
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="AI学术汇报生成器", page_icon="🎓", layout="wide")
-st.title("🎓 AI学术汇报一键生成器 (终极版)")
+st.title("🎓 AI学术汇报一键生成器 (最终修复版)")
 with st.sidebar:
     st.header("⚙️ 配置")
     api_key = st.text_input("请输入您的Google Gemini API Key", type="password")
-    model_options = [
-        
-        'gemini-2.0-flash',
-        'gemini-2.5-flash',
-        'gemini-2.5-pro'
-    ]
+    model_options = ['gemini-1.5-pro-latest', 'gemini-1.5-flash-latest']
     selected_model = st.selectbox("选择AI模型", model_options, index=0)
 
 col1, col2 = st.columns(2)
@@ -252,8 +262,10 @@ if st.button("🚀 开始生成汇报", use_container_width=True, disabled=(not 
             if cleaned_outline:
                 progress_bar.progress(70)
                 
+                # ## 这是最终的核心步骤，完全模拟您成功的手动流程 ##
                 progress_text.text(f"步骤 3/3: 正在融合大纲与模板生成最终文件...")
                 st.info("ℹ️ AI正在执行最终的全文重写，这可能需要一些时间...")
+                
                 template_code = html_template.getvalue().decode("utf-8")
                 
                 final_prompt = "".join([
@@ -264,19 +276,19 @@ if st.button("🚀 开始生成汇报", use_container_width=True, disabled=(not 
                     template_code
                 ])
                 
-                final_placeholder = st.empty()
-                final_html_raw = call_gemini(api_key, final_prompt, final_placeholder, selected_model, debug_log_container)
+                # ## 修改：最终调用不显示在主UI上，避免出现“短横线”等无关内容 ##
+                with st.spinner("AI正在生成最终HTML，请稍候..."):
+                    final_html_raw = call_gemini(api_key, final_prompt, None, selected_model, debug_log_container)
 
                 if final_html_raw:
                     # ## 这是修复所有问题的核心步骤 ##
                     final_html_code = final_cleanup(final_html_raw, debug_log_container)
 
-                    if "</html>" in final_html_code.lower():
+                    if final_html_code and "</html>" in final_html_code.lower():
                         debug_log_container.success(f"✅ 最终HTML生成并清理成功！")
                         st.session_state.final_html = final_html_code
                         progress_text.text(f"🎉 全部完成！")
                         progress_bar.progress(100)
-                        final_placeholder.empty()
                     else:
                         st.error("AI未能生成有效的最终HTML文件。请检查调试日志。")
                 else:
