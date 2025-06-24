@@ -144,7 +144,7 @@ st.markdown("本应用将直接使用您的提示词对论文全文进行深度�
 with st.sidebar:
     st.header("⚙️ 配置")
     api_key = st.text_input("请输入您的Google Gemini API Key", type="password")
-    model_options = ['gemini-1.5-pro-latest', 'gemini-1.5-flash-latest']
+    model_options = ['gemini-2.5-pro', 'gemini-1.5-pro-latest', 'gemini-1.5-flash-latest']
     selected_model = st.selectbox("选择AI模型", model_options, index=0, help="处理长文档建议使用Gemini 1.5 Pro。")
     if not api_key: st.warning("请输入API Key以开始。")
 
