@@ -2,6 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 import fitz  # PyMuPDF
 import traceback
+import time 
 
 # --- 提示词模板 ---
 
@@ -149,9 +150,10 @@ def validate_model(api_key, model_name, debug_log_container):
         debug_log_container.error(f"验证API Key时出现异常: {traceback.format_exc()}")
         return False
 
+# --- 这是新的、修正后的函数 ---
 def call_gemini(api_key, prompt_text, ui_placeholder, model_name, debug_log_container):
     """
-    调用Google Gemini API，将结果流式输出到UI，并返回完整的字符串结果。
+    【修正版】调用Google Gemini API，将结果流式输出到UI，并可靠地返回完整的字符串结果。
     """
     try:
         debug_log_container.write(f"--- \n准备调用AI: `{model_name}`...")
@@ -160,25 +162,28 @@ def call_gemini(api_key, prompt_text, ui_placeholder, model_name, debug_log_cont
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(model_name)
         
-        # <--- 核心修改：使用一个内部辅助生成器来同时流式输出和收集文本 ---
+        # 这是一个在函数本地作用域内的列表，非常安全和可靠
         collected_chunks = []
+        
+        # 内部生成器会修改外部函数作用域中的collected_chunks列表
         def stream_and_collect(stream):
             for chunk in stream:
-                # 确保我们只处理有文本的部分
                 if hasattr(chunk, 'text'):
                     text_part = chunk.text
-                    collected_chunks.append(text_part)
-                    yield text_part # 这个yield是为了让UI能够实时显示
+                    collected_chunks.append(text_part) # 安全地向外部列表添加内容
+                    yield text_part # 将文本块yield给UI进行流式显示
 
         response_stream = model.generate_content(prompt_text, stream=True)
         
-        # 使用st.write_stream来处理我们的内部生成器，这会驱动整个流程
+        # st.write_stream会消耗掉生成器，并在这个过程中填充好collected_chunks列表
         ui_placeholder.write_stream(stream_and_collect(response_stream))
         
-        debug_log_container.write("✅ AI流式响应成功完成。")
-        
-        # <--- 核心修改：在流式输出结束后，返回我们收集到的、拼接好的完整字符串 ---
+        # 当流式输出结束后，我们可以安全地拼接列表中的所有内容
         full_response_str = "".join(collected_chunks)
+        
+        debug_log_container.write(f"✅ AI流式响应成功完成。收集到 {len(full_response_str):,} 个字符。")
+        
+        # 明确地返回这个拼接好的、完整的字符串
         return full_response_str
 
     except Exception as e:
@@ -208,47 +213,68 @@ if 'final_html' not in st.session_state: st.session_state.final_html = None
 
 if st.button("🚀 开始生成汇报", use_container_width=True, disabled=(not api_key or not pdf_file or not html_template)):
     st.session_state.final_html = None
-    progress_container = st.container()
     
-    with st.expander("🐞 **调试日志 (点击展开查看详细流程)**", expanded=True):
+    # <--- 新增: 创建进度条和状态文本的占位符 ---
+    progress_container = st.container()
+    progress_text = progress_container.empty()
+    progress_bar = progress_container.progress(0)
+    
+    # <--- 修改: 让调试日志默认折叠起来 ---
+    with st.expander("🐞 **调试日志 (点击展开查看详细流程)**", expanded=False):
         debug_log_container = st.container()
 
+    # <--- 新增: 初始化计时器 ---
+    total_start_time = time.time()
+
     # 步骤 0: 验证
-    debug_log_container.info("步骤 0/3: 正在验证API Key和模型名称...")
+    progress_text.text("步骤 0/4: 正在验证配置...")
+    debug_log_container.info("步骤 0/4: 正在验证API Key和模型名称...")
     if not validate_model(api_key, selected_model, debug_log_container):
         st.stop()
+    progress_bar.progress(5)
 
     # 步骤 1: 解析PDF
-    progress_container.info("步骤 1/3: 正在解析PDF文件...")
+    stage_start_time = time.time()
+    progress_text.text("步骤 1/4: 正在解析PDF文件...")
     paper_text = parse_pdf(pdf_file, debug_log_container)
-
     if paper_text:
-        progress_container.success("✅ PDF文件解析完成！")
+        duration = time.time() - stage_start_time
+        debug_log_container.success(f"✅ PDF文件解析完成！(耗时: {duration:.2f}秒)")
+        progress_bar.progress(10)
         
         # 步骤 2: 生成大纲 (直接使用全文)
-        # ## 这是核心修改：明确告知用户此步骤耗时很长 ##
-        progress_container.warning(f"步骤 2/3: 正在使用 `{selected_model}` 对全文进行深度分析以生成大纲...")
-        st.info("ℹ️ **请注意: 这是最耗时的一步。** AI需要阅读和理解整个文档，可能需要数分钟时间，请耐心等待，不要关闭页面。")
-        
-        # ## 这是核心修改：将全文和您的原始提示词组合 ##
+        stage_start_time = time.time()
+        progress_text.text(f"步骤 2/4: 正在深度分析生成大纲 (最耗时)...")
+        st.info("ℹ️ AI正在阅读整个文档，可能需要数分钟，请耐心等待。")
         prompt_for_outline = OUTLINE_GENERATION_PROMPT_TEMPLATE + "\n\n--- 学术文档全文 ---\n" + paper_text
-        outline_placeholder = progress_container.empty()
+        outline_placeholder = st.empty() # 创建一个临时占位符，不干扰主进度条
         markdown_outline = call_gemini(api_key, prompt_for_outline, outline_placeholder, selected_model, debug_log_container)
         
-        if markdown_outline:
-            progress_container.success("✅ 汇报大纲生成成功！")
-            
+        if markdown_outline is not None:
+            duration = time.time() - stage_start_time
+            debug_log_container.success(f"✅ 汇报大纲生成成功！(耗时: {duration:.2f}秒)")
+            progress_bar.progress(80)
+            outline_placeholder.empty() # 清理临时占位符
+
             # 步骤 3: 融合代码
-            progress_container.info(f"步骤 3/3: 正在使用 `{selected_model}` 融合内容与模板...")
+            stage_start_time = time.time()
+            progress_text.text(f"步骤 3/4: 正在融合内容与模板...")
             template_code = html_template.getvalue().decode("utf-8")
             final_prompt = "".join([CODE_GENERATION_PROMPT_TEMPLATE, "\n\n--- PPT Outline ---\n", markdown_outline, "\n\n--- HTML Template ---\n", template_code])
-            final_placeholder = progress_container.empty()
-            with st.spinner("正在生成最终HTML代码..."):
-                final_html_code = call_gemini(api_key, final_prompt, final_placeholder, selected_model, debug_log_container)
+            final_placeholder = st.empty()
+            
+            # 步骤 4: 生成最终HTML
+            progress_text.text(f"步骤 4/4: 正在生成最终HTML代码...")
+            final_html_code = call_gemini(api_key, final_prompt, final_placeholder, selected_model, debug_log_container)
 
-            if final_html_code:
+            if final_html_code is not None:
+                duration = time.time() - stage_start_time
+                debug_log_container.success(f"✅ 最终HTML生成成功！(耗时: {duration:.2f}秒)")
                 st.session_state.final_html = final_html_code
-                progress_container.success("🎉 恭喜！您的学术汇报已准备就绪！")
+                total_duration = time.time() - total_start_time
+                progress_text.text(f"🎉 全部完成！总耗时: {total_duration:.2f}秒")
+                progress_bar.progress(100)
+                final_placeholder.empty()
             else:
                 progress_container.error("最终HTML生成失败，请检查调试日志。")
 
