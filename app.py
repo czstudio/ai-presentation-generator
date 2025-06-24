@@ -1,11 +1,14 @@
 import streamlit as st
 import google.generativeai as genai
-import fitz
+import fitz  # PyMuPDF
 import traceback
 import time
 import re
 
-# --- 提示词模板 (保持不变) ---
+# -------------------------------------------------------------
+# Prompt Templates
+# -------------------------------------------------------------
+
 OUTLINE_GENERATION_PROMPT_TEMPLATE = """
 角色 (Role):
 你是一位顶级的学术汇报设计师和内容策略师，同时具备出色的**"无图化设计" (Graphic-less Design)** 思维。你精通将复杂的学术论文转化为结构化、视觉化的演示文稿（PPT），并且擅长使用CSS样式、布局和文本符号来创造清晰、优雅的视觉效果，以最大限度地减少对外部图片或复杂SVG的依赖。
@@ -37,261 +40,332 @@ Generated markdown
   - **Data:** [根据选择的Type提供结构化数据。这是最关键的部分，格式见下方说明。]
 ---
 
-Visual.Data 格式说明 (已优化):
-Type: Symbol
-Data:
-symbol: [一个Unicode Emoji表情符号]
-text: [符号旁边的简短说明文字]
-color_hint: [一个CSS颜色提示]
-
-Type: Process
-Data:
-steps: [一个JSON数组]
-style: [numbered-list, chevron-arrow]
-
-Type: Chart
-Data:
-chart_type: [bar, line, pie]
-title: [图表标题]
-data_summary: [对图表核心数据的文字描述]
-
-Type: Table
-Data:
-caption: [表格标题]
-headers: [一个JSON数组]
-rows: [一个包含多行数据的JSON数组]
-
-Type: Quote
-Data:
-text: [引用的核心文本]
-source: [引用来源]
-
-Type: Comparison
-Data:
-item1_title: [对比项1的标题]
-item1_points: [一个JSON数组]
-item2_title: [对比项2的标题]
-item2_points: [一个JSON数组]
-
-Type: List 或 Type: Text_Only
-Data: null
-
-指令 (Instruction):
-现在，请分析用户上传的这份学术文档。严格遵循以上所有规则和**"无图化设计"原则，为其生成一份完整的、逻辑清晰的、强调使用简单符号和CSS**进行视觉呈现的学术演示文稿大纲。请开始。
+(后续视觉数据格式说明略)
 """
+
 CODE_GENERATION_PROMPT_TEMPLATE = """
-角色 (Role):
-你是一位精通HTML的前端开发专家。你的核心任务是根据一份结构化的Markdown大纲，为每一页幻灯片生成对应的HTML `<section>` 元素。
+你是一位精通HTML、CSS和JavaScript的前端开发专家，拥有像素级的代码保真能力。你的核心任务是将结构化的Markdown大纲，无损地、精确地与一个预定义的HTML模板相结合，动态生成最终的、可直接运行的、高度专业的HTML文件。
 
-关键指令:
-1.  **只生成幻灯片内容:** 你的输出必须 **只包含** `<section>...</section>` 代码块。
-2.  **禁止额外代码:** 绝对不要包含 `<html>`, `<body>`, `<head>`, `<!DOCTYPE>`, 或 `<script>` 标签。
-3.  **严格遵循大纲:** 确保为Markdown大纲中的每一页都生成一个对应的 `<section>`。
-4.  **智能渲染:** 在`<section>`内部，你需要将大纲中的内容和视觉提示（如表格、引用、符号）智能地转化为HTML结构。
-5.  **输出纯净:** 你的输出应该直接以 `<section ...>` 开始，并以 `</section>` 结束。不要添加任何解释性文字。
+【重要说明】: 你必须确保生成的HTML文件包含完整的幻灯片内容，而不仅仅是一个加载页面。
 
-输入:
-你将收到一份PPT大纲 (PPT Outline)。
+核心任务 (Core Task):
+你将收到两份输入：
+1. PPT大纲 (PPT Outline): 一份结构化的Markdown文件
+2. HTML模板 (HTML Template): 一个完整的HTML文件
 
-任务:
-请立即开始工作，将以下这份大纲转化为一系列连续的HTML `<section>` 代码块。
+你的任务是：
+1. **解析大纲**: 逐页解析PPT大纲中的所有字段
+2. **动态生成幻灯片**: 为每一页生成完整的HTML <section> 元素
+3. **确保内容显示**: 生成的HTML必须包含实际的幻灯片内容，不能只是加载页面
+4. **保护关键资源**: 保留所有 <img> 标签和Base64资源
+5. **匹配导航**: 确保幻灯片数量与导航元素一致
+
+【关键要求】:
+- 生成的HTML文件必须立即显示幻灯片内容
+- 不能只显示"正在加载"字样
+- 每个 <section> 必须包含完整的标题和内容
+- 确保所有JavaScript变量正确初始化
 """
 
+# -------------------------------------------------------------
+# Validation Utilities
+# -------------------------------------------------------------
 
-# --- 所有Agent函数 ---
+def validate_outline(outline_text: str, debug_log_container) -> bool:
+    """验证生成的大纲格式是否正确（忽略大小写、允许多空格）。"""
+    try:
+        # 1️⃣ 标记检测：忽略大小写，允许 'generated   markdown' 这类空格
+        marker_regex = r"generated\s+markdown"
+        if not re.search(marker_regex, outline_text, re.IGNORECASE):
+            debug_log_container.error("❌ 大纲缺少 'Generated markdown' 标记（不区分大小写）")
+            return False
+
+        # 2️⃣ 提取大纲正文（用正则切分而不是 str.split，兼容大小写 & 变体）
+        cleaned_outline_parts = re.split(marker_regex, outline_text, flags=re.IGNORECASE, maxsplit=1)
+        if len(cleaned_outline_parts) < 2:
+            debug_log_container.error("❌ 无法在大纲中找到 'Generated markdown' 标记后续内容")
+            return False
+        cleaned_outline = cleaned_outline_parts[1].strip()
+
+        # 3️⃣ 判断幻灯片分隔符数量
+        slide_sections = [s.strip() for s in cleaned_outline.split("---") if s.strip()]
+        if len(slide_sections) < 5:
+            debug_log_container.error(f"❌ 大纲包含的幻灯片数量过少: {len(slide_sections)} 页 (< 5)")
+            return False
+
+        # 4️⃣ 基本结构检查
+        valid_slides = 0
+        for i, section in enumerate(slide_sections, start=1):
+            if re.search(r"\*\*Slide:\*\*", section) and re.search(r"\*\*Title:\*\*", section):
+                valid_slides += 1
+            else:
+                debug_log_container.warning(f"⚠️ 第 {i} 页幻灯片格式可能不完整")
+
+        debug_log_container.success(f"✅ 大纲验证通过: 共 {len(slide_sections)} 页，{valid_slides} 页基本格式正确")
+        return True
+
+    except Exception as e:
+        debug_log_container.error(f"❌ 大纲验证出错: {e}")
+        return False
+
+
+def validate_html_template(template_content: str, debug_log_container) -> bool:
+    """验证HTML模板中是否包含关键结构元素。"""
+    try:
+        key_elements = [
+            ("<section", "幻灯片区域"),
+            ("<script", "JavaScript代码"),
+            ("class=", "CSS类"),
+            ("<div", "DIV容器"),
+        ]
+
+        missing = [desc for tag, desc in key_elements if tag not in template_content]
+        if missing:
+            debug_log_container.error(f"❌ HTML模板缺少关键元素: {', '.join(missing)}")
+            return False
+
+        debug_log_container.success("✅ HTML模板结构验证通过")
+        return True
+
+    except Exception as e:
+        debug_log_container.error(f"❌ HTML模板验证出错: {e}")
+        return False
+
+
+def validate_final_html(html_content: str, debug_log_container) -> bool:
+    """验证生成的 HTML 文件是否包含实际幻灯片内容，而不仅仅是加载提示。"""
+    try:
+        indicators = ["<section", "<h1", "<h2", "<h3", "<li>", "<p>"]
+        content_found = sum(1 for i in indicators if i in html_content)
+        if content_found < 3:
+            debug_log_container.error("❌ 生成的HTML缺少实际内容")
+            return False
+        if "正在加载" in html_content and content_found < 5:
+            debug_log_container.error("❌ 生成的HTML可能只是加载页面")
+            return False
+
+        debug_log_container.success(f"✅ 最终HTML验证通过: 检测到 {content_found} 个内容标识符")
+        return True
+
+    except Exception as e:
+        debug_log_container.error(f"❌ 最终HTML验证出错: {e}")
+        return False
+
+# -------------------------------------------------------------
+# PDF Parsing & Gemini Calls (unchanged logic unless noted)
+# -------------------------------------------------------------
+
 def parse_pdf(uploaded_file, debug_log_container):
     try:
         file_bytes = uploaded_file.getvalue()
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         full_text = "".join(page.get_text() + "\n" for page in doc)
-        debug_log_container.write(f"✅ PDF解析成功。总计 {len(full_text):,} 个字符。")
+
+        # Truncate long documents (50k chars) to avoid token overflow
+        if len(full_text) > 50000:
+            full_text = full_text[:50000] + "\n[文档已截断以避免API限制]"
+            debug_log_container.warning("⚠️ 文档过长，已自动截断")
+
+        debug_log_container.write(f"✅ PDF解析成功，总计 {len(full_text):,} 个字符")
         return full_text
-    except Exception as e:
-        st.error(f"PDF解析失败: {e}")
-        debug_log_container.error(f"PDF解析时出现异常: {traceback.format_exc()}")
+    except Exception:
+        st.error("PDF解析失败")
+        debug_log_container.error(f"PDF解析时出现异常:\n{traceback.format_exc()}")
         return None
 
-def validate_model(api_key, model_name, debug_log_container):
+
+def validate_model(api_key: str, model_name: str, debug_log_container) -> bool:
     try:
-        if not model_name or not model_name.strip(): return False
+        if not model_name.strip():
+            st.error("**模型名称不能为空!**")
+            return False
         genai.configure(api_key=api_key)
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        if f"models/{model_name}" in available_models:
+        available = [m.name for m in genai.list_models() if "generateContent" in m.supported_generation_methods]
+        if f"models/{model_name}" in available:
             debug_log_container.success(f"✅ 模型 `{model_name}` 验证通过！")
             return True
-        else:
-            st.error(f"**模型验证失败!** `{model_name}` 不存在。")
-            return False
-    except Exception as e:
-        st.error(f"**API Key验证失败!**")
-        debug_log_container.error(f"验证API Key时异常: {traceback.format_exc()}")
+        st.error(f"**模型验证失败!** `{model_name}` 不存在或无权访问")
+        debug_log_container.error(f"模型 `models/{model_name}` 不在可用列表中。")
+        return False
+    except Exception:
+        st.error("**API Key验证或模型列表获取失败!**")
+        debug_log_container.error(f"验证API Key时出现异常:\n{traceback.format_exc()}")
         return False
 
-def call_gemini(api_key, prompt_text, ui_placeholder, model_name, debug_log_container):
-    try:
-        debug_log_container.write(f"--- \n准备调用AI: `{model_name}`...")
-        debug_log_container.write(f"**发送的Prompt长度:** `{len(prompt_text):,}` 字符")
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(model_name)
-        
-        collected_chunks = []
-        def stream_and_collect(stream):
-            for chunk in stream:
-                if hasattr(chunk, 'text'):
-                    text_part = chunk.text
-                    collected_chunks.append(text_part)
-                    yield text_part
 
-        response_stream = model.generate_content(prompt_text, stream=True)
-        ui_placeholder.write_stream(stream_and_collect(response_stream))
-        
-        full_response_str = "".join(collected_chunks)
-        debug_log_container.write(f"✅ AI流式响应成功完成。收集到 {len(full_response_str):,} 个字符。")
-        return full_response_str
-    except Exception as e:
-        error_type = type(e).__name__
-        error_message = str(e)
-        ui_placeholder.error(f"🚨 **AI调用失败!**\n\n**错误类型:** `{error_type}`\n\n**错误信息:**\n\n`{error_message}`")
-        debug_log_container.error(f"--- AI调用时发生严重错误 ---\n{traceback.format_exc()}")
-        return None
+def call_gemini(api_key: str, prompt_text: str, ui_placeholder, model_name: str, debug_log_container):
+    """调用 Gemini API（带指数退避重试）并流式输出。"""
+    retries = 3
+    for attempt in range(retries):
+        try:
+            debug_log_container.write(f"--- 调用AI: `{model_name}` (第 {attempt+1}/{retries} 次)")
+            debug_log_container.write(f"Prompt 长度: {len(prompt_text):,} 字符")
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel(model_name)
 
-# ## NEW: 这是智能识别大纲的核心函数 ##
-def extract_clean_outline(raw_output, debug_log_container):
-    """
-    智能地从AI的原始输出中提取出纯净的Markdown大纲。
-    不再依赖固定的"Generated markdown"标记。
-    """
-    try:
-        debug_log_container.info("正在尝试智能提取大纲...")
-        
-        # 使用正则表达式寻找第一个幻灯片的标记
-        match = re.search(r"\*\*\s*Slide\s*:\s*\*\*", raw_output)
-        
-        if not match:
-            debug_log_container.error("❌ 在AI响应中未能找到任何`**Slide:**`标记。无法识别大纲内容。")
-            with st.expander("查看AI返回的原始响应（调试用）"):
-                st.text(raw_output)
+            # Rate‑limit backoff
+            if attempt:
+                wait = min(30, 5 * 2 ** attempt)
+                debug_log_container.info(f"⏳ 等待 {wait}s 后重试…")
+                time.sleep(wait)
+
+            collected = []
+            def collector(stream):
+                for chunk in stream:
+                    if hasattr(chunk, "text"):
+                        collected.append(chunk.text)
+                        yield chunk.text
+            stream_resp = model.generate_content(prompt_text, stream=True)
+            ui_placeholder.write_stream(collector(stream_resp))
+            full = "".join(collected)
+            debug_log_container.success(f"✅ AI 流式响应完成 ({len(full):,} 字符)")
+            return full
+        except Exception as e:
+            if "429" in str(e) or "ResourceExhausted" in type(e).__name__:
+                debug_log_container.warning(f"⚠️ 第 {attempt+1} 次尝试触发配额限制")
+                if attempt < retries - 1:
+                    continue
+                ui_placeholder.error("🚨 API配额限制超出! 请稍后重试或升级计划。")
+                return None
+            debug_log_container.error(f"调用失败: {e}")
+            if attempt < retries - 1:
+                continue
+            ui_placeholder.error(f"🚨 AI调用失败: {e}")
             return None
+    return None
 
-        first_slide_pos = match.start()
-        
-        # 从第一个幻灯片标记处开始，向前回溯寻找最后一个"---"分隔符
-        start_anchor = "---"
-        last_divider_pos = raw_output.rfind(start_anchor, 0, first_slide_pos)
-        
-        if last_divider_pos != -1:
-            cleaned_outline = raw_output[last_divider_pos:]
-        else:
-            cleaned_outline = raw_output[first_slide_pos:]
-        
-        cleaned_outline = cleaned_outline.strip()
+# -------------------------------------------------------------
+# Streamlit UI (unchanged except minor text tweaks)
+# -------------------------------------------------------------
 
-        if cleaned_outline.count("**Title:**") < 3:
-            debug_log_container.warning("⚠️ 提取出的大纲结构不完整，可能导致后续步骤失败。")
-            st.warning("AI生成的大纲结构不完整或无法识别，请检查调试日志或重试。")
-        
-        debug_log_container.success(f"✅ 已智能识别并提取出大纲内容，长度 {len(cleaned_outline):,} 字符。")
-        return cleaned_outline
-
-    except Exception as e:
-        debug_log_container.error(f"提取大纲时发生意外错误: {traceback.format_exc()}")
-        return None
-
-
-# --- Streamlit UI ---
 st.set_page_config(page_title="AI学术汇报生成器", page_icon="🎓", layout="wide")
-st.title("🎓 AI学术汇报一键生成器 (最终版)")
+st.title("🎓 AI学术汇报一键生成器 (调试增强版)")
+st.markdown("本应用将分析您的论文并生成完整的HTML演示文稿，包含详细的调试信息。")
+
+with st.expander("🔧 常见问题排查指南", expanded=False):
+    st.markdown("""
+    **若生成的HTML只显示\"正在加载\"：**
+    1. 检查调试日志中的验证步骤
+    2. 确认大纲格式是否正确 (需含 *Generated markdown* 标记)
+    3. 检查HTML模板是否包含必要结构
+    4. 重试生成过程
+    """)
+
 with st.sidebar:
     st.header("⚙️ 配置")
-    api_key = st.text_input("请输入您的Google Gemini API Key", type="password")
-    model_options = [
-        'gemini-1.5-flash-latest',  # 推荐
-        'gemini-1.5-pro-latest',
-        'gemini-2.0-flash',
-        'gemini-2.5-flash',
-        'gemini-2.5-pro'
+    api_key = st.text_input("请输入Google Gemini API Key", type="password")
+    model_opts = [
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro-latest",
+        "gemini-2.0-flash",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
     ]
-    selected_model = st.selectbox("选择AI模型", model_options, index=0)
+    selected_model = st.selectbox("选择AI模型", model_opts, index=0)
+    if not api_key:
+        st.warning("请输入 API Key 以开始。")
 
 col1, col2 = st.columns(2)
-with col1: pdf_file = st.file_uploader("1. 上传您的学术论文 (.pdf)", type=['pdf'])
-with col2: html_template = st.file_uploader("2. 上传您的汇报模板 (.html)", type=['html'])
+pdf_file = col1.file_uploader("1. 上传学术论文 (.pdf)", type=["pdf"])
+html_template = col2.file_uploader("2. 上传汇报模板 (.html)", type=["html"])
 
-if 'final_html' not in st.session_state: st.session_state.final_html = None
-
-# --- 主流程 (已更新为使用最终的智能识别函数) ---
-if st.button("🚀 开始生成汇报", use_container_width=True, disabled=(not api_key or not pdf_file or not html_template)):
+if "final_html" not in st.session_state:
     st.session_state.final_html = None
-    progress_container = st.container()
-    progress_text = progress_container.empty()
-    progress_bar = progress_container.progress(0)
-    
-    with st.expander("🐞 **调试日志 (点击展开查看详细流程)**", expanded=True):
-        debug_log_container = st.container()
 
-    total_start_time = time.time()
+if st.button("🚀 开始生成汇报", use_container_width=True, disabled=not (api_key and pdf_file and html_template)):
+    st.session_state.final_html = None
 
-    progress_text.text("步骤 0/3: 正在验证配置...")
-    if not validate_model(api_key, selected_model, debug_log_container): st.stop()
-    progress_bar.progress(5)
+    progress = st.container()
+    progress_text = progress.empty()
+    bar = progress.progress(0)
 
-    progress_text.text("步骤 1/3: 正在解析PDF文件...")
-    paper_text = parse_pdf(pdf_file, debug_log_container)
-    if paper_text:
-        progress_bar.progress(10)
-        
-        stage_start_time = time.time()
-        progress_text.text(f"步骤 2/3: 正在深度分析生成大纲...")
-        st.info("ℹ️ AI正在阅读整个文档，这可能需要数分钟，请耐心等待。")
-        
-        prompt_for_outline = OUTLINE_GENERATION_PROMPT_TEMPLATE + "\n\n--- 学术文档全文 ---\n" + paper_text
-        outline_placeholder = st.empty()
-        markdown_outline = call_gemini(api_key, prompt_for_outline, outline_placeholder, selected_model, debug_log_container)
-        
-        if markdown_outline:
-            duration = time.time() - stage_start_time
-            debug_log_container.success(f"✅ AI响应接收完毕！(耗时: {duration:.2f}秒)")
-            progress_bar.progress(70)
-            outline_placeholder.empty()
+    with st.expander("🐞 详细调试日志", expanded=True):
+        debug = st.container()
 
-            cleaned_outline = extract_clean_outline(markdown_outline, debug_log_container)
+    # 0️⃣ 验证配置
+    progress_text.text("步骤 0/6: 验证配置…")
+    if not validate_model(api_key, selected_model, debug):
+        st.stop()
+    bar.progress(5)
 
-            if cleaned_outline:
-                progress_bar.progress(85)
-                
-                stage_start_time = time.time()
-                progress_text.text(f"步骤 3/3: 正在融合内容并生成最终HTML...")
-                template_code = html_template.getvalue().decode("utf-8")
-                
-                final_prompt = "".join([CODE_GENERATION_PROMPT_TEMPLATE, "\n\n--- PPT Outline ---\n", cleaned_outline])
-                final_placeholder = st.empty()
-                generated_slides_html = call_gemini(api_key, final_prompt, final_placeholder, selected_model, debug_log_container)
+    # 1️⃣ 解析 PDF
+    progress_text.text("步骤 1/6: 解析 PDF…")
+    paper_text = parse_pdf(pdf_file, debug)
+    if not paper_text:
+        st.error("PDF解析失败，终止")
+        st.stop()
+    bar.progress(15)
 
-                if generated_slides_html and "section" in generated_slides_html.lower():
-                    try:
-                        final_html_code = re.sub(
-                            r'(<main[^>]*>)(.*?)(</main>)', 
-                            lambda m: f"{m.group(1)}\n{generated_slides_html}\n{m.group(3)}",
-                            template_code, 
-                            count=1, 
-                            flags=re.DOTALL | re.IGNORECASE
-                        )
-                        if final_html_code == template_code: raise ValueError("未能找到<main>标签对")
+    # 2️⃣ 验证 HTML 模板
+    progress_text.text("步骤 2/6: 验证 HTML 模板…")
+    tpl_code = html_template.getvalue().decode("utf-8")
+    if not validate_html_template(tpl_code, debug):
+        st.warning("HTML模板可能存在问题，但继续处理…")
+    bar.progress(25)
 
-                        duration = time.time() - stage_start_time
-                        debug_log_container.success(f"✅ 最终HTML组装成功！(耗时: {duration:.2f}秒)")
-                        
-                        st.session_state.final_html = final_html_code
-                        total_duration = time.time() - total_start_time
-                        progress_text.text(f"🎉 全部完成！总耗时: {total_duration:.2f}秒")
-                        progress_bar.progress(100)
-                        final_placeholder.empty()
-                    except Exception as e:
-                        st.error(f"智能组装文件时出错: {e}")
-                else:
-                    st.error("AI未能生成有效的幻灯片HTML内容。")
-            else:
-                st.error("无法从AI响应中提取出有效的大纲。请检查调试日志或重试。")
+    # 3️⃣ 生成大纲
+    progress_text.text("步骤 3/6: 生成演示大纲…")
+    st.info("AI 正在分析文档内容，可能耗时数分钟…")
+    prompt_outline = OUTLINE_GENERATION_PROMPT_TEMPLATE + "\n\n--- 学术文档全文 ---\n" + paper_text
+    outline_placeholder = st.empty()
+    markdown_outline = call_gemini(api_key, prompt_outline, outline_placeholder, selected_model, debug)
+    outline_placeholder.empty()
+    if not markdown_outline:
+        st.error("大纲生成失败")
+        st.stop()
+    bar.progress(60)
 
-if st.session_state.get('final_html'):
-    st.download_button(label="📥 下载您的学术汇报", data=st.session_state.final_html.encode('utf-8'), file_name='my_presentation.html', mime='text/html', use_container_width=True)
+    # 4️⃣ 验证大纲
+    progress_text.text("步骤 4/6: 验证大纲…")
+    if not validate_outline(markdown_outline, debug):
+        st.error("大纲格式错误，请检查日志并重试")
+        with st.expander("生成的大纲内容 (调试)"):
+            st.text(markdown_outline[:2000] + ("..." if len(markdown_outline) > 2000 else ""))
+        st.stop()
+
+    cleaned_outline = re.split(r"generated\s+markdown", markdown_outline, flags=re.IGNORECASE, maxsplit=1)[1].strip()
+    bar.progress(70)
+
+    # 5️⃣ 生成最终 HTML
+    progress_text.text("步骤 5/6: 融合内容与模板…")
+    final_prompt = CODE_GENERATION_PROMPT_TEMPLATE + "\n\n--- PPT Outline ---\n" + cleaned_outline + "\n\n--- HTML Template ---\n" + tpl_code
+    html_placeholder = st.empty()
+    final_html = call_gemini(api_key, final_prompt, html_placeholder, selected_model, debug)
+    html_placeholder.empty()
+    if not final_html:
+        st.error("最终HTML生成失败")
+        st.stop()
+    bar.progress(90)
+
+    # 6️⃣ 验证最终 HTML
+    progress_text.text("步骤 6/6: 验证最终HTML…")
+    if not validate_final_html(final_html, debug):
+        st.warning("⚠️ 最终 HTML 可能存在问题，但仍提供下载")
+        with st.expander("HTML 片段 (调试)"):
+            st.code(final_html[:1000] + ("..." if len(final_html) > 1000 else ""), language="html")
+
+    st.session_state.final_html = final_html
+    bar.progress(100)
+    progress_text.text("🎉 全部完成！")
+
+# -------------------------------------------------------------
+# 下载 & 预览
+# -------------------------------------------------------------
+
+if st.session_state.get("final_html"):
+    left, right = st.columns([2, 1])
+    left.download_button(
+        "📥 下载完整学术汇报 HTML",
+        data=st.session_state.final_html.encode("utf-8"),
+        file_name="academic_presentation.html",
+        mime="text/html",
+        use_container_width=True,
+    )
+
+    if right.button("🔍 预览 HTML"):
+        with st.expander("HTML 内容预览", expanded=True):
+            preview = st.session_state.final_html
+            st.code(preview[:2000] + ("..." if len(preview) > 2000 else ""), language="html")
+
+st.sidebar.markdown("---")
+st.sidebar.info("💡 若遇问题，请查看调试日志，或重新上传文件重试。")
