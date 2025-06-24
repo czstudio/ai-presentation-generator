@@ -202,7 +202,7 @@ st.title("🎓 AI学术汇报一键生成器 (最终版)")
 with st.sidebar:
     st.header("⚙️ 配置")
     api_key = st.text_input("请输入您的Google Gemini API Key", type="password")
-        model_options = [
+    model_options = [
         
         'gemini-2.0-flash',
         'gemini-2.5-flash',
