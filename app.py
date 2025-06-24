@@ -150,15 +150,37 @@ def validate_model(api_key, model_name, debug_log_container):
         return False
 
 def call_gemini(api_key, prompt_text, ui_placeholder, model_name, debug_log_container):
+    """
+    调用Google Gemini API，将结果流式输出到UI，并返回完整的字符串结果。
+    """
     try:
         debug_log_container.write(f"--- \n准备调用AI: `{model_name}`...")
         debug_log_container.write(f"**发送的Prompt长度:** `{len(prompt_text):,}` 字符")
+        
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(model_name)
+        
+        # <--- 核心修改：使用一个内部辅助生成器来同时流式输出和收集文本 ---
+        collected_chunks = []
+        def stream_and_collect(stream):
+            for chunk in stream:
+                # 确保我们只处理有文本的部分
+                if hasattr(chunk, 'text'):
+                    text_part = chunk.text
+                    collected_chunks.append(text_part)
+                    yield text_part # 这个yield是为了让UI能够实时显示
+
         response_stream = model.generate_content(prompt_text, stream=True)
-        full_response = ui_placeholder.write_stream(response_stream)
+        
+        # 使用st.write_stream来处理我们的内部生成器，这会驱动整个流程
+        ui_placeholder.write_stream(stream_and_collect(response_stream))
+        
         debug_log_container.write("✅ AI流式响应成功完成。")
-        return full_response
+        
+        # <--- 核心修改：在流式输出结束后，返回我们收集到的、拼接好的完整字符串 ---
+        full_response_str = "".join(collected_chunks)
+        return full_response_str
+
     except Exception as e:
         error_type = type(e).__name__
         error_message = str(e)
