@@ -257,14 +257,38 @@ if st.button("🚀 开始生成汇报", use_container_width=True, disabled=(not 
             outline_placeholder.empty() # 清理临时占位符
 
             # 步骤 3: 融合代码
+            progress_text.text(f"步骤 3/5: 正在清洗和验证生成的大纲...")
+            
+            ANCHOR = "Generated markdown"
+            if ANCHOR in markdown_outline:
+                # 从锚点开始，提取纯净的大纲内容
+                cleaned_outline = markdown_outline.split(ANCHOR, 1)[1]
+                cleaned_outline = cleaned_outline.strip()
+                
+                # 检查清洗后是否为空
+                if not cleaned_outline:
+                    st.error("AI未能生成有效的大纲内容（锚点后为空）。")
+                    st.stop()
+                
+                debug_log_container.success("✅ 已从AI响应中成功提取出结构化大纲。")
+                progress_bar.progress(85)
+            else:
+                st.error("AI响应格式不符合预期，未能找到'Generated markdown'标记。无法继续。")
+                debug_log_container.warning(f"AI未返回预期的'{ANCHOR}'锚点。响应全文如下：\n{markdown_outline}")
+                st.stop()
+
+            # 步骤 4: 融合代码 (现在使用清洗过的大纲)
             stage_start_time = time.time()
-            progress_text.text(f"步骤 3/4: 正在融合内容与模板...")
+            progress_text.text(f"步骤 4/5: 正在融合内容与模板...")
             template_code = html_template.getvalue().decode("utf-8")
-            final_prompt = "".join([CODE_GENERATION_PROMPT_TEMPLATE, "\n\n--- PPT Outline ---\n", markdown_outline, "\n\n--- HTML Template ---\n", template_code])
+            
+            # ## 核心修改: 使用 cleaned_outline 而不是 markdown_outline ##
+            final_prompt = "".join([CODE_GENERATION_PROMPT_TEMPLATE, "\n\n--- PPT Outline ---\n", cleaned_outline, "\n\n--- HTML Template ---\n", template_code])
+            
             final_placeholder = st.empty()
             
-            # 步骤 4: 生成最终HTML
-            progress_text.text(f"步骤 4/4: 正在生成最终HTML代码...")
+            # 步骤 5: 生成最终HTML
+            progress_text.text(f"步骤 5/5: 正在生成最终HTML代码...")
             final_html_code = call_gemini(api_key, final_prompt, final_placeholder, selected_model, debug_log_container)
 
             if final_html_code is not None:
