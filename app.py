@@ -221,7 +221,12 @@ st.title("🎓 AI学术汇报一键生成器 (最终修复版)")
 with st.sidebar:
     st.header("⚙️ 配置")
     api_key = st.text_input("请输入您的Google Gemini API Key", type="password")
-    model_options = ['gemini-1.5-pro-latest', 'gemini-1.5-flash-latest']
+    model_options = [
+       
+        'gemini-2.0-flash',
+        'gemini-2.5-flash',
+        'gemini-2.5-pro'
+    ]
     selected_model = st.selectbox("选择AI模型", model_options, index=0)
 
 col1, col2 = st.columns(2)
