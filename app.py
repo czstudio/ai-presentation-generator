@@ -1,294 +1,31 @@
 import streamlit as st
+import google.generativeai as genai
 import fitz
 import traceback
 import time
 import re
-import json
-from typing import Dict, Any, Optional, List
-from dataclasses import dataclass
-from abc import ABC, abstractmethod
 from io import BytesIO
+from typing import Dict, Any, Optional, List
+import json
+from dataclasses import dataclass
 
 # 需要安装的依赖包
-# pip install streamlit PyMuPDF python-pptx openai anthropic google-generativeai
+# pip install streamlit PyMuPDF python-pptx google-generativeai
 
 try:
     from pptx import Presentation
     from pptx.util import Inches, Pt
-    from pptx.enum.text import PP_ALIGN
+    from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
     from pptx.dml.color import RGBColor
+    from pptx.enum.shapes import MSO_SHAPE
+    import colorsys
     PPTX_AVAILABLE = True
 except ImportError:
     PPTX_AVAILABLE = False
 
-try:
-    import openai
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-
-try:
-    import anthropic
-    ANTHROPIC_AVAILABLE = True
-except ImportError:
-    ANTHROPIC_AVAILABLE = False
-
-try:
-    import google.generativeai as genai
-    GEMINI_AVAILABLE = True
-except ImportError:
-    GEMINI_AVAILABLE = False
-
-# --- 配置区域 ---
-@dataclass
-class APIConfig:
-    """API配置类"""
-    openai_key: str = ""
-    anthropic_key: str = ""
-    gemini_key: str = ""
-
-# 默认配置 - 用户可以在这里预设API Keys
-DEFAULT_CONFIG = APIConfig(
-    gemini_key="",      # 在这里填入你的Gemini API Key
-    openai_key="",      # 在这里填入你的OpenAI API Key
-    anthropic_key=""    # 在这里填入你的Claude API Key
-)
-
-# --- AI厂商抽象接口 ---
-class AIProvider(ABC):
-    """AI厂商统一接口"""
-    
-    @abstractmethod
-    def call_api(self, prompt: str, model: str, api_key: str, stream_callback=None) -> Optional[str]:
-        """调用AI API"""
-        pass
-    
-    @abstractmethod
-    def get_models(self) -> List[str]:
-        """获取可用模型列表"""
-        pass
-    
-    @abstractmethod
-    def validate_key(self, api_key: str) -> bool:
-        """验证API Key"""
-        pass
-
-class GeminiProvider(AIProvider):
-    """Google Gemini Provider"""
-    
-    def get_models(self) -> List[str]:
-        return ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
-    
-    def validate_key(self, api_key: str) -> bool:
-        if not GEMINI_AVAILABLE or not api_key:
-            return False
-        try:
-            genai.configure(api_key=api_key)
-            list(genai.list_models())
-            return True
-        except:
-            return False
-    
-    def call_api(self, prompt: str, model: str, api_key: str, stream_callback=None) -> Optional[str]:
-        try:
-            genai.configure(api_key=api_key)
-            ai_model = genai.GenerativeModel(model)
-            
-            if stream_callback:
-                response_stream = ai_model.generate_content(prompt, stream=True)
-                collected_chunks = []
-                for chunk in response_stream:
-                    if hasattr(chunk, 'text'):
-                        text_part = chunk.text
-                        collected_chunks.append(text_part)
-                        stream_callback(text_part)
-                return "".join(collected_chunks)
-            else:
-                response = ai_model.generate_content(prompt)
-                return response.text if hasattr(response, 'text') else None
-        except Exception as e:
-            st.error(f"Gemini API调用失败: {e}")
-            return None
-
-class OpenAIProvider(AIProvider):
-    """OpenAI Provider"""
-    
-    def get_models(self) -> List[str]:
-        return ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo']
-    
-    def validate_key(self, api_key: str) -> bool:
-        if not OPENAI_AVAILABLE or not api_key:
-            return False
-        try:
-            client = openai.OpenAI(api_key=api_key)
-            client.models.list()
-            return True
-        except:
-            return False
-    
-    def call_api(self, prompt: str, model: str, api_key: str, stream_callback=None) -> Optional[str]:
-        try:
-            client = openai.OpenAI(api_key=api_key)
-            
-            if stream_callback:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    stream=True
-                )
-                collected_chunks = []
-                for chunk in response:
-                    if chunk.choices[0].delta.content:
-                        text_part = chunk.choices[0].delta.content
-                        collected_chunks.append(text_part)
-                        stream_callback(text_part)
-                return "".join(collected_chunks)
-            else:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                return response.choices[0].message.content
-        except Exception as e:
-            st.error(f"OpenAI API调用失败: {e}")
-            return None
-
-class AnthropicProvider(AIProvider):
-    """Anthropic Claude Provider"""
-    
-    def get_models(self) -> List[str]:
-        return ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229']
-    
-    def validate_key(self, api_key: str) -> bool:
-        if not ANTHROPIC_AVAILABLE or not api_key:
-            return False
-        try:
-            client = anthropic.Anthropic(api_key=api_key)
-            # 简单验证，发送一个很短的消息
-            client.messages.create(
-                model="claude-3-5-haiku-20241022",
-                max_tokens=10,
-                messages=[{"role": "user", "content": "Hi"}]
-            )
-            return True
-        except:
-            return False
-    
-    def call_api(self, prompt: str, model: str, api_key: str, stream_callback=None) -> Optional[str]:
-        try:
-            client = anthropic.Anthropic(api_key=api_key)
-            
-            if stream_callback:
-                response = client.messages.create(
-                    model=model,
-                    max_tokens=4000,
-                    messages=[{"role": "user", "content": prompt}],
-                    stream=True
-                )
-                collected_chunks = []
-                for chunk in response:
-                    if chunk.type == "content_block_delta":
-                        text_part = chunk.delta.text
-                        collected_chunks.append(text_part)
-                        stream_callback(text_part)
-                return "".join(collected_chunks)
-            else:
-                response = client.messages.create(
-                    model=model,
-                    max_tokens=4000,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                return response.content[0].text
-        except Exception as e:
-            st.error(f"Claude API调用失败: {e}")
-            return None
-
-class UniversalProvider(AIProvider):
-    """通用HTTP API Provider (适用于Kimi, Doubao, 通义千问等)"""
-    
-    def __init__(self, provider_name: str, base_url: str, models: List[str]):
-        self.provider_name = provider_name
-        self.base_url = base_url
-        self.models = models
-    
-    def get_models(self) -> List[str]:
-        return self.models
-    
-    def validate_key(self, api_key: str) -> bool:
-        if not api_key:
-            return False
-        try:
-            # 简单的验证请求
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-            # 大多数API都有models端点
-            response = requests.get(f"{self.base_url}/models", headers=headers, timeout=10)
-            return response.status_code == 200
-        except:
-            return False
-    
-    def call_api(self, prompt: str, model: str, api_key: str, stream_callback=None) -> Optional[str]:
-        try:
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            data = {
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": bool(stream_callback)
-            }
-            
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=data,
-                stream=bool(stream_callback),
-                timeout=300
-            )
-            
-            if stream_callback:
-                collected_chunks = []
-                for line in response.iter_lines():
-                    if line:
-                        line = line.decode('utf-8')
-                        if line.startswith('data: '):
-                            try:
-                                json_data = json.loads(line[6:])
-                                if 'choices' in json_data and json_data['choices']:
-                                    delta = json_data['choices'][0].get('delta', {})
-                                    if 'content' in delta:
-                                        text_part = delta['content']
-                                        collected_chunks.append(text_part)
-                                        stream_callback(text_part)
-                            except:
-                                continue
-                return "".join(collected_chunks)
-            else:
-                result = response.json()
-                return result['choices'][0]['message']['content']
-                
-        except Exception as e:
-            st.error(f"{self.provider_name} API调用失败: {e}")
-            return None
-
-# 初始化所有AI厂商
-PROVIDERS = {
-    "Gemini": GeminiProvider(),
-    "OpenAI": OpenAIProvider(),
-    "Claude": AnthropicProvider(),
-    "Kimi": UniversalProvider("Kimi", "https://api.moonshot.cn/v1", ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"]),
-    "Doubao": UniversalProvider("Doubao", "https://ark.cn-beijing.volces.com/api/v3", ["ep-20241022-******"]),  # 需要用户填入实际endpoint
-    "通义千问": UniversalProvider("通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", ["qwen-turbo", "qwen-plus", "qwen-max"]),
-    "智谱AI": UniversalProvider("智谱AI", "https://open.bigmodel.cn/api/paas/v4", ["glm-4", "glm-4-plus", "glm-4-0520"]),
-    "DeepSeek": UniversalProvider("DeepSeek", "https://api.deepseek.com/v1", ["deepseek-chat", "deepseek-coder"]),
-    "硅基流动": UniversalProvider("硅基流动", "https://api.siliconflow.cn/v1", ["Qwen/Qwen2.5-72B-Instruct", "deepseek-ai/DeepSeek-V2.5"])
-}
-
 # --- 提示词模板 (保持不变) ---
+
+# ## 大纲生成器 (保持不变) ##
 OUTLINE_GENERATION_PROMPT_TEMPLATE = """
 角色 (Role):
 你是一位顶级的学术汇报设计师和内容策略师，同时具备出色的**"无图化设计" (Graphic-less Design)** 思维。你精通将复杂的学术论文转化为结构化、视觉化的演示文稿（PPT），并且擅长使用CSS样式、布局和文本符号来创造清晰、优雅的视觉效果，以最大限度地减少对外部图片或复杂SVG的依赖。
@@ -362,6 +99,7 @@ Data: null
 现在，请分析用户上传的这份学术文档。严格遵循以上所有规则和**"无图化设计"原则，为其生成一份完整的、逻辑清晰的、强调使用简单符号和CSS**进行视觉呈现的学术演示文稿大纲。请开始。
 """
 
+# ## 代码融合器 (终极强化版 - 结合原始流程精华) ##
 CODE_GENERATION_PROMPT_TEMPLATE = """
 角色 (Role):
 你是一位精通HTML、CSS和JavaScript的前端开发专家，拥有像素级的代码保真能力。你的核心任务是将结构化的Markdown大纲，无损地、精确地与一个预定义的HTML模板相结合，动态生成最终的、可直接运行的、高度专业的HTML文件。你对细节有极高的要求，尤其是在处理图像资源和数据可视化占位方面。
@@ -396,30 +134,86 @@ CODE_GENERATION_PROMPT_TEMPLATE = """
 以下是用户提供的 **PPT大纲 (PPT Outline)** 和 **HTML模板 (HTML Template)**。请你立即开始工作，严格遵循以上所有规则，特别是保护校徽等关键资源和优雅处理图表占位的指令，将大纲内容与模板代码结合，生成最终的、完整的、专业级的HTML文件。不要提供任何解释或评论，直接输出完整的HTML代码。
 """
 
-# --- PPT生成器 ---
-class PPTGenerator:
-    """PPT生成器类"""
+# --- HTML样式提取器 ---
+class HTMLStyleExtractor:
+    """从HTML模板中提取样式信息用于PPT生成"""
     
-    def __init__(self):
+    def __init__(self, html_content: str):
+        self.html_content = html_content
+        self.extracted_styles = {}
+        self._extract_styles()
+    
+    def _extract_styles(self):
+        """提取HTML中的样式信息"""
+        try:
+            # 提取CSS中的颜色和字体信息
+            css_pattern = r'<style[^>]*>(.*?)</style>'
+            css_matches = re.findall(css_pattern, self.html_content, re.DOTALL)
+            
+            for css_content in css_matches:
+                # 提取背景颜色
+                bg_colors = re.findall(r'background-color:\s*([^;]+)', css_content)
+                text_colors = re.findall(r'color:\s*([^;]+)', css_content)
+                font_families = re.findall(r'font-family:\s*([^;]+)', css_content)
+                font_sizes = re.findall(r'font-size:\s*([^;]+)', css_content)
+                
+                self.extracted_styles.update({
+                    'background_colors': bg_colors,
+                    'text_colors': text_colors, 
+                    'font_families': font_families,
+                    'font_sizes': font_sizes
+                })
+                
+            # 设置默认样式
+            if not self.extracted_styles.get('background_colors'):
+                self.extracted_styles['background_colors'] = ['#ffffff']
+            if not self.extracted_styles.get('text_colors'):
+                self.extracted_styles['text_colors'] = ['#333333']
+                
+        except Exception as e:
+            # 如果提取失败，使用默认样式
+            self.extracted_styles = {
+                'background_colors': ['#ffffff'],
+                'text_colors': ['#333333'],
+                'font_families': ['Arial, sans-serif'],
+                'font_sizes': ['24px']
+            }
+    
+    def get_primary_bg_color(self):
+        """获取主背景色"""
+        return self.extracted_styles.get('background_colors', ['#ffffff'])[0]
+    
+    def get_primary_text_color(self):
+        """获取主文本色"""
+        return self.extracted_styles.get('text_colors', ['#333333'])[0]
+    
+    def get_primary_font(self):
+        """获取主字体"""
+        fonts = self.extracted_styles.get('font_families', ['Arial, sans-serif'])
+        return fonts[0].split(',')[0].strip().strip('"\'')
+
+# --- PPT生成器 (升级版) ---
+class EnhancedPPTGenerator:
+    """增强版PPT生成器，完全复制HTML样式"""
+    
+    def __init__(self, html_template: str = None):
         self.presentation = None
+        self.style_extractor = HTMLStyleExtractor(html_template) if html_template else None
     
-    def create_presentation(self, outline_data: str, template_path: str = None) -> BytesIO:
-        """根据大纲创建PPT"""
+    def create_presentation(self, outline_data: str) -> BytesIO:
+        """根据大纲和HTML样式创建PPT"""
         if not PPTX_AVAILABLE:
             raise ImportError("python-pptx库未安装，无法生成PPT文件")
         
         # 创建演示文稿
-        if template_path:
-            self.presentation = Presentation(template_path)
-        else:
-            self.presentation = Presentation()
-            
+        self.presentation = Presentation()
+        
         # 解析大纲
         slides_data = self._parse_outline(outline_data)
         
         # 生成幻灯片
         for slide_data in slides_data:
-            self._create_slide(slide_data)
+            self._create_styled_slide(slide_data)
         
         # 保存到BytesIO
         ppt_buffer = BytesIO()
@@ -432,6 +226,9 @@ class PPTGenerator:
         """解析大纲文本"""
         slides = []
         current_slide = {}
+        current_content = []
+        in_content_section = False
+        in_visual_section = False
         
         lines = outline_text.split('\n')
         
@@ -442,8 +239,12 @@ class PPTGenerator:
                 
             if line == '---':
                 if current_slide:
+                    current_slide['content'] = current_content
                     slides.append(current_slide)
                     current_slide = {}
+                    current_content = []
+                    in_content_section = False
+                    in_visual_section = False
                 continue
             
             if line.startswith('**Slide:**'):
@@ -453,21 +254,38 @@ class PPTGenerator:
             elif line.startswith('**Purpose:**'):
                 current_slide['purpose'] = line.split('**Purpose:**')[1].strip()
             elif line.startswith('**Content:**'):
-                current_slide['content'] = []
-            elif line.startswith('- ') and 'content' in current_slide:
-                current_slide['content'].append(line[2:].strip())
+                in_content_section = True
+                in_visual_section = False
             elif line.startswith('**Visual:**'):
-                current_slide['visual'] = {}
-            elif line.startswith('  - **Type:**') and 'visual' in current_slide:
+                in_visual_section = True
+                in_content_section = False
+                current_slide['visual'] = {'type': '', 'data': ''}
+            elif line.startswith('  - **Type:**') and in_visual_section:
                 current_slide['visual']['type'] = line.split('**Type:**')[1].strip()
+            elif line.startswith('  - **Data:**') and in_visual_section:
+                current_slide['visual']['data'] = line.split('**Data:**')[1].strip()
+            elif line.startswith('- ') and in_content_section:
+                # 清理markdown格式
+                content_line = line[2:].strip()
+                content_line = re.sub(r'\*\*(.*?)\*\*', r'\1', content_line)  # 移除加粗标记
+                current_content.append(content_line)
         
+        # 添加最后一个幻灯片
         if current_slide:
+            current_slide['content'] = current_content
             slides.append(current_slide)
             
         return slides
     
-    def _create_slide(self, slide_data: Dict):
-        """创建单个幻灯片"""
+    def _hex_to_rgb(self, hex_color: str) -> tuple:
+        """将十六进制颜色转换为RGB"""
+        hex_color = hex_color.strip('#')
+        if len(hex_color) == 6:
+            return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+        return (51, 51, 51)  # 默认深灰色
+    
+    def _create_styled_slide(self, slide_data: Dict):
+        """创建带样式的幻灯片"""
         # 根据purpose选择布局
         purpose = slide_data.get('purpose', 'Content')
         
@@ -478,9 +296,19 @@ class PPTGenerator:
             
         slide = self.presentation.slides.add_slide(layout)
         
+        # 应用HTML样式
+        if self.style_extractor:
+            self._apply_html_styles_to_slide(slide)
+        
         # 设置标题
-        if slide.shapes.title:
-            slide.shapes.title.text = slide_data.get('title', '')
+        title_text = slide_data.get('title', '')
+        if slide.shapes.title and title_text:
+            title = slide.shapes.title
+            title.text = title_text
+            
+            # 应用标题样式
+            if self.style_extractor:
+                self._apply_text_styles(title.text_frame)
         
         # 设置内容
         content = slide_data.get('content', [])
@@ -489,17 +317,156 @@ class PPTGenerator:
             tf = body_shape.text_frame
             tf.clear()
             
-            for i, item in enumerate(content):
-                if i == 0:
-                    tf.text = item
-                else:
+            # 设置第一个段落
+            if content:
+                tf.text = content[0]
+                if self.style_extractor:
+                    self._apply_text_styles(tf)
+                
+                # 添加其他段落
+                for item in content[1:]:
                     p = tf.add_paragraph()
                     p.text = item
                     p.level = 0
+        
+        # 处理视觉元素
+        visual = slide_data.get('visual', {})
+        if visual and visual.get('type'):
+            self._add_visual_element(slide, visual)
+    
+    def _apply_html_styles_to_slide(self, slide):
+        """将HTML样式应用到幻灯片"""
+        try:
+            # 获取背景色并应用
+            bg_color_hex = self.style_extractor.get_primary_bg_color()
+            if bg_color_hex and bg_color_hex != '#ffffff':
+                # 设置背景色
+                background = slide.background
+                fill = background.fill
+                fill.solid()
+                rgb = self._hex_to_rgb(bg_color_hex)
+                fill.fore_color.rgb = RGBColor(*rgb)
+        except Exception:
+            pass  # 如果应用样式失败，使用默认样式
+    
+    def _apply_text_styles(self, text_frame):
+        """应用文本样式"""
+        if not self.style_extractor:
+            return
+            
+        try:
+            # 获取文本颜色
+            text_color_hex = self.style_extractor.get_primary_text_color()
+            font_name = self.style_extractor.get_primary_font()
+            
+            for paragraph in text_frame.paragraphs:
+                for run in paragraph.runs:
+                    # 应用字体
+                    if font_name:
+                        run.font.name = font_name
+                    
+                    # 应用颜色
+                    if text_color_hex:
+                        rgb = self._hex_to_rgb(text_color_hex)
+                        run.font.color.rgb = RGBColor(*rgb)
+                    
+                    # 设置字体大小
+                    run.font.size = Pt(18)
+                    
+        except Exception:
+            pass  # 如果应用样式失败，使用默认样式
+    
+    def _add_visual_element(self, slide, visual):
+        """添加视觉元素"""
+        visual_type = visual.get('type', '').strip('`')
+        
+        if visual_type == 'Symbol':
+            self._add_symbol_element(slide, visual)
+        elif visual_type == 'Chart':
+            self._add_chart_element(slide, visual)
+        elif visual_type == 'Table':
+            self._add_table_element(slide, visual)
+    
+    def _add_symbol_element(self, slide, visual):
+        """添加符号元素"""
+        try:
+            data_str = visual.get('data', '')
+            if 'symbol:' in data_str:
+                # 简单解析symbol
+                symbol_match = re.search(r'symbol:\s*([^\n]+)', data_str)
+                if symbol_match:
+                    symbol = symbol_match.group(1).strip()
+                    
+                    # 在右下角添加符号
+                    left = Inches(8)
+                    top = Inches(6)
+                    width = Inches(1)
+                    height = Inches(1)
+                    
+                    textbox = slide.shapes.add_textbox(left, top, width, height)
+                    text_frame = textbox.text_frame
+                    text_frame.text = symbol
+                    
+                    # 设置大字体
+                    for paragraph in text_frame.paragraphs:
+                        for run in paragraph.runs:
+                            run.font.size = Pt(48)
+        except Exception:
+            pass
+    
+    def _add_chart_element(self, slide, visual):
+        """添加图表元素（显示数据摘要）"""
+        try:
+            data_str = visual.get('data', '')
+            if 'data_summary:' in data_str:
+                # 提取数据摘要
+                summary_match = re.search(r'data_summary:\s*([^\n]+)', data_str)
+                if summary_match:
+                    summary = summary_match.group(1).strip()
+                    
+                    # 在中下部添加数据摘要框
+                    left = Inches(1)
+                    top = Inches(5)
+                    width = Inches(8)
+                    height = Inches(1.5)
+                    
+                    textbox = slide.shapes.add_textbox(left, top, width, height)
+                    text_frame = textbox.text_frame
+                    text_frame.text = f"📊 数据要点: {summary}"
+                    
+                    # 设置样式
+                    if self.style_extractor:
+                        self._apply_text_styles(text_frame)
+        except Exception:
+            pass
+    
+    def _add_table_element(self, slide, visual):
+        """添加表格元素"""
+        # 暂时简化，只添加表格标题
+        try:
+            data_str = visual.get('data', '') 
+            if 'caption:' in data_str:
+                caption_match = re.search(r'caption:\s*([^\n]+)', data_str)
+                if caption_match:
+                    caption = caption_match.group(1).strip()
+                    
+                    # 添加表格标题
+                    left = Inches(1)
+                    top = Inches(4.5)
+                    width = Inches(8)
+                    height = Inches(0.5)
+                    
+                    textbox = slide.shapes.add_textbox(left, top, width, height)
+                    text_frame = textbox.text_frame
+                    text_frame.text = f"📋 {caption}"
+                    
+                    if self.style_extractor:
+                        self._apply_text_styles(text_frame)
+        except Exception:
+            pass
 
-# --- 核心处理函数 ---
+# --- 所有Agent函数 (保持与原始版本完全一致) ---
 def parse_pdf(uploaded_file, debug_log_container):
-    """解析PDF文件"""
     try:
         file_bytes = uploaded_file.getvalue()
         doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -510,31 +477,60 @@ def parse_pdf(uploaded_file, debug_log_container):
         debug_log_container.error(f"PDF解析时出现异常: {traceback.format_exc()}")
         return None
 
-def call_ai_api(provider_name: str, model: str, api_key: str, prompt: str, stream_callback=None, debug_log_container=None) -> Optional[str]:
-    """统一AI API调用接口"""
-    if provider_name not in PROVIDERS:
-        if debug_log_container:
-            debug_log_container.error(f"不支持的AI厂商: {provider_name}")
-        return None
-    
-    provider = PROVIDERS[provider_name]
-    
-    if debug_log_container:
-        debug_log_container.write(f"正在调用 {provider_name} - {model}...")
-        debug_log_container.write(f"Prompt长度: {len(prompt):,} 字符")
-    
+def validate_model(api_key, model_name, debug_log_container):
     try:
-        result = provider.call_api(prompt, model, api_key, stream_callback)
-        if debug_log_container:
-            debug_log_container.write(f"✅ {provider_name} API调用成功")
-        return result
+        if not model_name or not model_name.strip(): return False
+        genai.configure(api_key=api_key)
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        if f"models/{model_name}" in available_models:
+            debug_log_container.success(f"✅ 模型 `{model_name}` 验证通过！")
+            return True
+        else:
+            st.error(f"**模型验证失败!** `{model_name}` 不存在。")
+            return False
+    except Exception:
+        st.error(f"**API Key验证失败!**")
+        debug_log_container.error(f"验证API Key时异常: {traceback.format_exc()}")
+        return False
+
+def call_gemini(api_key, prompt_text, ui_placeholder, model_name, debug_log_container):
+    try:
+        debug_log_container.write(f"--- \n准备调用AI: `{model_name}`...")
+        debug_log_container.write(f"**发送的Prompt长度:** `{len(prompt_text):,}` 字符")
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(model_name)
+        
+        collected_chunks = []
+        def stream_and_collect(stream):
+            for chunk in stream:
+                if hasattr(chunk, 'text'):
+                    text_part = chunk.text
+                    collected_chunks.append(text_part)
+                    yield text_part
+
+        # 只有在提供了UI占位符时才进行流式写入
+        if ui_placeholder:
+            response_stream = model.generate_content(prompt_text, stream=True)
+            ui_placeholder.write_stream(stream_and_collect(response_stream))
+        else:
+            # 如果不提供UI占位符，则直接生成，避免在UI上产生不必要的输出
+            response = model.generate_content(prompt_text)
+            if hasattr(response, 'text'):
+                collected_chunks.append(response.text)
+        
+        full_response_str = "".join(collected_chunks)
+        debug_log_container.write(f"✅ AI响应成功完成。收集到 {len(full_response_str):,} 个字符。")
+        return full_response_str
     except Exception as e:
-        if debug_log_container:
-            debug_log_container.error(f"❌ {provider_name} API调用失败: {e}")
+        error_message = f"🚨 **AI调用失败!** 请检查调试日志。\n\n**错误详情:** {e}"
+        if ui_placeholder:
+            ui_placeholder.error(error_message)
+        else:
+            st.error(error_message)
+        debug_log_container.error(f"--- AI调用时发生严重错误 ---\n{traceback.format_exc()}")
         return None
 
 def extract_clean_outline(raw_output, debug_log_container):
-    """提取清洁的大纲"""
     try:
         match = re.search(r"\*\*\s*Slide\s*:\s*\*\*", raw_output)
         if not match:
@@ -552,215 +548,206 @@ def extract_clean_outline(raw_output, debug_log_container):
         debug_log_container.error(f"提取大纲时发生意外错误: {traceback.format_exc()}")
         return None
 
+# ## 强化版最终清理函数 - 修复HTML结束标签问题 ##
 def final_cleanup(raw_html, debug_log_container):
-    """最终HTML清理"""
+    """
+    对最终的HTML进行强力清理，彻底解决HTML结束标签问题。
+    """
     try:
         debug_log_container.write(f"开始清理HTML，原始长度: {len(raw_html):,} 字符")
         
-        html_start_pos = raw_html.find("<!DOCTYPE html>")
+        # 1. 先清理明显的markdown标记
+        cleaned_html = raw_html
+        markdown_patterns = [
+            r'```html\s*',
+            r'```\s*$',
+            r'^```.*?\n',
+        ]
+        
+        for pattern in markdown_patterns:
+            cleaned_html = re.sub(pattern, '', cleaned_html, flags=re.MULTILINE)
+        
+        # 2. 寻找HTML文档的真正起点
+        html_start_pos = cleaned_html.find("<!DOCTYPE html>")
         if html_start_pos == -1:
             debug_log_container.warning("⚠️ 未找到`<!DOCTYPE html>`，尝试寻找`<html`标签")
-            html_start_pos = raw_html.find("<html")
+            html_start_pos = cleaned_html.find("<html")
             if html_start_pos == -1:
                 debug_log_container.error("❌ 未找到HTML起始标签")
                 return None
         
-        html_end_pos = raw_html.rfind("</html>")
-        if html_end_pos == -1:
-            debug_log_container.error("❌ 未找到HTML结束标签")
-            return None
+        # 3. 寻找HTML文档的结束位置 - 改进算法
+        html_end_pos = -1
         
-        html_content = raw_html[html_start_pos:html_end_pos + 7]
-        html_content = html_content.strip()
+        # 先尝试找到最后一个</html>
+        html_end_matches = list(re.finditer(r'</html>', cleaned_html, re.IGNORECASE))
+        if html_end_matches:
+            html_end_pos = html_end_matches[-1].end()
+            debug_log_container.write(f"找到HTML结束标签，位置: {html_end_pos}")
+        else:
+            # 如果没找到</html>，检查是否有</body>，然后手动添加</html>
+            body_end_matches = list(re.finditer(r'</body>', cleaned_html, re.IGNORECASE))
+            if body_end_matches:
+                body_end_pos = body_end_matches[-1].end()
+                # 在</body>后添加</html>
+                cleaned_html = cleaned_html[:body_end_pos] + "\n</html>" + cleaned_html[body_end_pos:]
+                html_end_pos = body_end_pos + 8  # 8 = len("\n</html>")
+                debug_log_container.write(f"未找到</html>，在</body>后添加，新位置: {html_end_pos}")
+            else:
+                # 最后的fallback：在最后添加</html>
+                cleaned_html += "\n</html>"
+                html_end_pos = len(cleaned_html)
+                debug_log_container.write(f"未找到</body>，在末尾添加</html>，位置: {html_end_pos}")
         
+        # 4. 提取HTML内容
+        html_content = cleaned_html[html_start_pos:html_end_pos].strip()
+        
+        # 5. 最终验证和修复
+        if not html_content.endswith("</html>"):
+            html_content += "\n</html>"
+            debug_log_container.write("添加缺失的</html>标签")
+        
+        # 6. 基本格式验证
         if not (html_content.startswith("<!DOCTYPE html>") or html_content.startswith("<html")):
             debug_log_container.error("❌ 清理后的HTML格式不正确")
             return None
-            
-        if not html_content.endswith("</html>"):
-            debug_log_container.error("❌ 清理后的HTML结尾不正确")
-            return None
         
         debug_log_container.success(f"✅ HTML清理完成！最终长度: {len(html_content):,} 字符")
+        debug_log_container.write(f"HTML开头: {html_content[:100]}...")
+        debug_log_container.write(f"HTML结尾: ...{html_content[-100:]}")
+        
         return html_content
         
     except Exception as e:
         debug_log_container.error(f"最终清理时出错: {traceback.format_exc()}")
         return None
 
-# --- Streamlit UI ---
-st.set_page_config(page_title="三大厂商AI学术汇报生成器", page_icon="🎓", layout="wide")
-st.title("🎓 三大厂商AI学术汇报生成器 (精简版)")
+# --- 配置区域 (用户可预设默认API Key) ---
+# 🔑 在下方引号内填入您的Gemini API Key，避免每次手动输入
+DEFAULT_GEMINI_API_KEY = ""  # 在这里填入您的API Key
 
-# 侧边栏配置
+# --- Streamlit UI ---
+st.set_page_config(page_title="AI学术汇报生成器", page_icon="🎓", layout="wide")
+st.title("🎓 AI学术汇报一键生成器 (增强版)")
+
 with st.sidebar:
-    st.header("⚙️ AI厂商配置")
-    
-    # 选择AI厂商
-    available_providers = list(PROVIDERS.keys())
-    selected_provider = st.selectbox("选择AI厂商", available_providers, index=0)
-    
-    # 获取该厂商的可用模型
-    models = PROVIDERS[selected_provider].get_models()
-    selected_model = st.selectbox("选择模型", models, index=0)
-    
-    # API Key输入
-    api_key_mapping = {
-        "OpenAI": DEFAULT_CONFIG.openai_key,
-        "Gemini": DEFAULT_CONFIG.gemini_key,
-        "Claude": DEFAULT_CONFIG.anthropic_key
-    }
-    
-    default_key = api_key_mapping.get(selected_provider, "")
-    api_key = st.text_input(
-        f"请输入{selected_provider} API Key", 
-        value=default_key,
-        type="password",
-        help="💡 可以在代码中预设默认API Key"
-    )
-    
-    # 验证API Key
-    if api_key:
-        if PROVIDERS[selected_provider].validate_key(api_key):
-            st.success(f"✅ {selected_provider} API Key验证通过")
-        else:
-            st.error(f"❌ {selected_provider} API Key验证失败")
+    st.header("⚙️ 配置")
+    # 如果有默认API Key，则预填充，否则为空
+    default_key = DEFAULT_GEMINI_API_KEY if DEFAULT_GEMINI_API_KEY.strip() else ""
+    api_key = st.text_input("请输入您的Google Gemini API Key", 
+                           value=default_key, 
+                           type="password",
+                           help="💡 提示：您可以在代码顶部的 DEFAULT_GEMINI_API_KEY 中预设API Key")
+    model_options =  ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
+    selected_model = st.selectbox("选择AI模型", model_options, index=0)
     
     st.divider()
     st.header("📄 输出格式")
-    
-    # 输出格式选择
     output_formats = st.multiselect(
         "选择输出格式",
         ["HTML演示文稿", "PPT文件"],
         default=["HTML演示文稿"]
     )
 
-# 主界面
 col1, col2 = st.columns(2)
-with col1:
+with col1: 
     pdf_file = st.file_uploader("1. 上传您的学术论文 (.pdf)", type=['pdf'])
-with col2:
-    html_template = st.file_uploader("2. 上传您的HTML模板 (可选)", type=['html'])
+with col2: 
+    html_template = st.file_uploader("2. 上传您的HTML模板", type=['html'])
 
-# 存储生成的结果
-if 'results' not in st.session_state:
+# 存储生成结果
+if 'results' not in st.session_state: 
     st.session_state.results = {}
 
-# 生成按钮
+# --- 主流程 ---
 if st.button("🚀 开始生成汇报", use_container_width=True, 
-             disabled=(not api_key or not pdf_file or not output_formats)):
+             disabled=(not api_key or not pdf_file or not output_formats or 
+                      ("HTML演示文稿" in output_formats and not html_template))):
     
     st.session_state.results = {}
-    
     progress_container = st.container()
     progress_text = progress_container.empty()
     progress_bar = progress_container.progress(0)
     
-    with st.expander("🐞 **调试日志**", expanded=False):
+    with st.expander("🐞 **调试日志 (点击展开查看详细流程)**", expanded=False):
         debug_log_container = st.container()
-    
-    # 解析PDF
+
+    if not validate_model(api_key, selected_model, debug_log_container): 
+        st.stop()
+    progress_bar.progress(5)
+
     paper_text = parse_pdf(pdf_file, debug_log_container)
-    if not paper_text:
-        st.error("PDF解析失败")
-        st.stop()
-    
-    progress_bar.progress(10)
-    
-    # 生成大纲
-    progress_text.text("步骤 1/3: 正在生成演示文稿大纲...")
-    prompt_for_outline = OUTLINE_GENERATION_PROMPT_TEMPLATE + "\n\n--- 学术文档全文 ---\n" + paper_text
-    
-    outline_placeholder = st.empty()
-    
-    def stream_callback(text):
-        # 可以在这里处理流式输出
-        pass
-    
-    markdown_outline = call_ai_api(
-        selected_provider, 
-        selected_model, 
-        api_key, 
-        prompt_for_outline, 
-        stream_callback, 
-        debug_log_container
-    )
-    
-    if not markdown_outline:
-        st.error("大纲生成失败")
-        st.stop()
-    
-    progress_bar.progress(40)
-    outline_placeholder.empty()
-    
-    # 清理大纲
-    progress_text.text("步骤 2/3: 正在处理大纲...")
-    cleaned_outline = extract_clean_outline(markdown_outline, debug_log_container)
-    
-    if not cleaned_outline:
-        st.error("大纲处理失败")
-        st.stop()
-    
-    progress_bar.progress(50)
-    
-    # 生成HTML
-    if "HTML演示文稿" in output_formats:
-        if not html_template:
-            st.error("生成HTML需要上传HTML模板")
-        else:
-            progress_text.text("步骤 3a/3: 正在生成HTML演示文稿...")
-            
-            template_code = html_template.getvalue().decode("utf-8")
-            
-            final_prompt = "".join([
-                CODE_GENERATION_PROMPT_TEMPLATE,
-                "\n\n--- PPT Outline ---\n",
-                cleaned_outline,
-                "\n\n--- HTML Template ---\n",
-                template_code
-            ])
-            
-            with st.spinner("正在生成HTML..."):
-                final_html_raw = call_ai_api(
-                    selected_provider,
-                    selected_model,
-                    api_key,
-                    final_prompt,
-                    None,
-                    debug_log_container
-                )
-            
-            if final_html_raw:
-                final_html_code = final_cleanup(final_html_raw, debug_log_container)
-                if final_html_code:
-                    st.session_state.results['html'] = final_html_code
-                    debug_log_container.success("✅ HTML生成成功！")
-                else:
-                    st.error("HTML清理失败")
+    if paper_text:
+        progress_bar.progress(10)
+        
+        progress_text.text(f"步骤 1/3: 正在深度分析生成大纲...")
+        prompt_for_outline = OUTLINE_GENERATION_PROMPT_TEMPLATE + "\n\n--- 学术文档全文 ---\n" + paper_text
+        outline_placeholder = st.empty()
+        markdown_outline = call_gemini(api_key, prompt_for_outline, outline_placeholder, selected_model, debug_log_container)
+        
+        if markdown_outline:
+            progress_bar.progress(40)
+            outline_placeholder.empty()
+
+            progress_text.text(f"步骤 2/3: 正在智能识别并清洗大纲...")
+            cleaned_outline = extract_clean_outline(markdown_outline, debug_log_container)
+
+            if cleaned_outline:
+                progress_bar.progress(50)
+                
+                # 生成HTML
+                if "HTML演示文稿" in output_formats:
+                    progress_text.text(f"步骤 3a/3: 正在融合大纲与模板生成HTML文件...")
+                    st.info("ℹ️ AI正在执行最终的全文重写，这可能需要一些时间...")
+                    
+                    template_code = html_template.getvalue().decode("utf-8")
+                    
+                    final_prompt = "".join([
+                        CODE_GENERATION_PROMPT_TEMPLATE, 
+                        "\n\n--- PPT Outline ---\n", 
+                        cleaned_outline, 
+                        "\n\n--- HTML Template ---\n", 
+                        template_code
+                    ])
+                    
+                    with st.spinner("AI正在生成最终HTML，请稍候..."):
+                        final_html_raw = call_gemini(api_key, final_prompt, None, selected_model, debug_log_container)
+
+                    if final_html_raw:
+                        final_html_code = final_cleanup(final_html_raw, debug_log_container)
+
+                        if final_html_code and "</html>" in final_html_code.lower():
+                            debug_log_container.success(f"✅ 最终HTML生成并清理成功！")
+                            st.session_state.results['html'] = final_html_code
+                        else:
+                            st.error("AI未能生成有效的最终HTML文件。请检查调试日志。")
+                    else:
+                        st.error("AI未能生成最终HTML内容。")
+                
+                progress_bar.progress(70)
+                
+                # 生成PPT
+                if "PPT文件" in output_formats:
+                    if not PPTX_AVAILABLE:
+                        st.error("PPT生成需要安装python-pptx库: pip install python-pptx")
+                    else:
+                        progress_text.text(f"步骤 3b/3: 正在生成PPT文件...")
+                        
+                        try:
+                            # 传入HTML模板用于样式提取
+                            template_code = html_template.getvalue().decode("utf-8") if html_template else None
+                            ppt_generator = EnhancedPPTGenerator(template_code)
+                            ppt_buffer = ppt_generator.create_presentation(cleaned_outline)
+                            st.session_state.results['ppt'] = ppt_buffer.getvalue()
+                            debug_log_container.success("✅ PPT生成成功！")
+                        except Exception as e:
+                            st.error(f"PPT生成失败: {e}")
+                            debug_log_container.error(f"PPT生成错误: {traceback.format_exc()}")
+                
+                progress_bar.progress(100)
+                progress_text.text(f"🎉 全部完成！")
             else:
-                st.error("HTML生成失败")
-    
-    progress_bar.progress(70)
-    
-    # 生成PPT
-    if "PPT文件" in output_formats:
-        if not PPTX_AVAILABLE:
-            st.error("PPT生成需要安装python-pptx库: pip install python-pptx")
-        else:
-            progress_text.text("步骤 3b/3: 正在生成PPT文件...")
-            
-            try:
-                ppt_generator = PPTGenerator()
-                ppt_buffer = ppt_generator.create_presentation(cleaned_outline)
-                st.session_state.results['ppt'] = ppt_buffer.getvalue()
-                debug_log_container.success("✅ PPT生成成功！")
-            except Exception as e:
-                st.error(f"PPT生成失败: {e}")
-                debug_log_container.error(f"PPT生成错误: {traceback.format_exc()}")
-    
-    progress_bar.progress(100)
-    progress_text.text("🎉 生成完成！")
+                st.error("无法从AI响应中提取出有效的大纲。")
 
 # 下载区域
 if st.session_state.results:
@@ -792,10 +779,8 @@ if st.session_state.results:
 st.sidebar.divider()
 st.sidebar.header("📦 依赖库状态")
 st.sidebar.write("✅ PyMuPDF")
+st.sidebar.write("✅ google-generativeai")
 st.sidebar.write("✅ python-pptx" if PPTX_AVAILABLE else "❌ python-pptx")
-st.sidebar.write("✅ google-generativeai" if GEMINI_AVAILABLE else "❌ google-generativeai")
-st.sidebar.write("✅ openai" if OPENAI_AVAILABLE else "❌ openai")
-st.sidebar.write("✅ anthropic" if ANTHROPIC_AVAILABLE else "❌ anthropic")
 
 if not PPTX_AVAILABLE:
-    st.sidebar.info("💡 安装python-pptx以启用PPT生成功能")
+    st.sidebar.info("💡 安装python-pptx以启用PPT生成功能:\npip install python-pptx")
