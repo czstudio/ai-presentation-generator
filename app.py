@@ -134,110 +134,86 @@ CODE_GENERATION_PROMPT_TEMPLATE = """
 以下是用户提供的 **PPT大纲 (PPT Outline)** 和 **HTML模板 (HTML Template)**。请你立即开始工作，严格遵循以上所有规则，特别是保护校徽等关键资源和优雅处理图表占位的指令，将大纲内容与模板代码结合，生成最终的、完整的、专业级的HTML文件。不要提供任何解释或评论，直接输出完整的HTML代码。
 """
 
-# --- 复旦大学模板样式提取器 ---
-class FudanTemplateExtractor:
-    """专门针对复旦大学HTML模板的精确样式提取器"""
+# --- HTML样式提取器 ---
+class HTMLStyleExtractor:
+    """从HTML模板中提取样式信息用于PPT生成"""
     
     def __init__(self, html_content: str):
         self.html_content = html_content
-        self.fudan_colors = {}
-        self.fudan_fonts = {}
-        self.fudan_spacing = {}
-        self._extract_fudan_design_system()
+        self.extracted_styles = {}
+        self._extract_styles()
     
-    def _extract_fudan_design_system(self):
-        """提取复旦模板的完整设计系统"""
+    def _extract_styles(self):
+        """提取HTML中的样式信息"""
         try:
-            # 提取CSS变量（复旦设计系统的核心）
-            css_vars_pattern = r':root\s*{([^}]+)}'
-            css_vars_match = re.search(css_vars_pattern, self.html_content, re.DOTALL)
+            # 提取CSS中的颜色和字体信息
+            css_pattern = r'<style[^>]*>(.*?)</style>'
+            css_matches = re.findall(css_pattern, self.html_content, re.DOTALL)
             
-            if css_vars_match:
-                css_vars = css_vars_match.group(1)
+            for css_content in css_matches:
+                # 提取背景颜色
+                bg_colors = re.findall(r'background-color:\s*([^;]+)', css_content)
+                text_colors = re.findall(r'color:\s*([^;]+)', css_content)
+                font_families = re.findall(r'font-family:\s*([^;]+)', css_content)
+                font_sizes = re.findall(r'font-size:\s*([^;]+)', css_content)
                 
-                # 提取复旦色彩系统
-                color_patterns = {
-                    'fudan_blue': r'--fudan-blue:\s*([^;]+)',
-                    'fudan_deep_blue': r'--fudan-deep-blue:\s*([^;]+)', 
-                    'fudan_light_blue': r'--fudan-light-blue:\s*([^;]+)',
-                    'fudan_white': r'--fudan-white:\s*([^;]+)',
-                    'fudan_black': r'--fudan-black:\s*([^;]+)',
-                    'fudan_near_black': r'--fudan-near-black:\s*([^;]+)',
-                    'fudan_bg_light': r'--fudan-bg-light:\s*([^;]+)',
-                    'fudan_accent_gray': r'--fudan-accent-gray:\s*([^;]+)',
-                    'fudan_light_gray': r'--fudan-light-gray:\s*([^;]+)'
-                }
+                self.extracted_styles.update({
+                    'background_colors': bg_colors,
+                    'text_colors': text_colors, 
+                    'font_families': font_families,
+                    'font_sizes': font_sizes
+                })
                 
-                for key, pattern in color_patterns.items():
-                    match = re.search(pattern, css_vars)
-                    if match:
-                        self.fudan_colors[key] = match.group(1).strip()
-                
-                # 提取字体系统
-                font_patterns = {
-                    'serif': r'--font-serif:\s*([^;]+)',
-                    'sans': r'--font-sans:\s*([^;]+)'
-                }
-                
-                for key, pattern in font_patterns.items():
-                    match = re.search(pattern, css_vars)
-                    if match:
-                        self.fudan_fonts[key] = match.group(1).strip().replace("'", "").split(',')[0]
-            
-            # 设置默认复旦样式（如果提取失败）
-            if not self.fudan_colors:
-                self.fudan_colors = {
-                    'fudan_blue': '#0055A2',
-                    'fudan_deep_blue': '#003366',
-                    'fudan_light_blue': '#A8D8F8',
-                    'fudan_white': '#FFFFFF',
-                    'fudan_near_black': '#2D3748',
-                    'fudan_bg_light': '#F7FAFC',
-                    'fudan_light_gray': '#E2E8F0'
-                }
-            
-            if not self.fudan_fonts:
-                self.fudan_fonts = {
-                    'serif': 'Noto Serif SC',
-                    'sans': 'Noto Sans SC'
-                }
+            # 设置默认样式
+            if not self.extracted_styles.get('background_colors'):
+                self.extracted_styles['background_colors'] = ['#ffffff']
+            if not self.extracted_styles.get('text_colors'):
+                self.extracted_styles['text_colors'] = ['#333333']
                 
         except Exception as e:
-            # 确保有默认的复旦样式
-            self.fudan_colors = {
-                'fudan_blue': '#0055A2',
-                'fudan_deep_blue': '#003366', 
-                'fudan_white': '#FFFFFF',
-                'fudan_near_black': '#2D3748',
-                'fudan_bg_light': '#F7FAFC'
+            # 如果提取失败，使用默认样式
+            self.extracted_styles = {
+                'background_colors': ['#ffffff'],
+                'text_colors': ['#333333'],
+                'font_families': ['Arial, sans-serif'],
+                'font_sizes': ['24px']
             }
-            self.fudan_fonts = {'serif': 'Noto Serif SC', 'sans': 'Noto Sans SC'}
+    
+    def get_primary_bg_color(self):
+        """获取主背景色"""
+        return self.extracted_styles.get('background_colors', ['#ffffff'])[0]
+    
+    def get_primary_text_color(self):
+        """获取主文本色"""
+        return self.extracted_styles.get('text_colors', ['#333333'])[0]
+    
+    def get_primary_font(self):
+        """获取主字体"""
+        fonts = self.extracted_styles.get('font_families', ['Arial, sans-serif'])
+        return fonts[0].split(',')[0].strip().strip('"\'')
 
-# --- 复旦风格PPT生成器 ---
-class FudanStylePPTGenerator:
-    """完全按照复旦大学HTML模板风格生成PPT"""
+# --- PPT生成器 (升级版) ---
+class EnhancedPPTGenerator:
+    """增强版PPT生成器，完全复制HTML样式"""
     
     def __init__(self, html_template: str = None):
         self.presentation = None
-        self.fudan_extractor = FudanTemplateExtractor(html_template) if html_template else None
+        self.style_extractor = HTMLStyleExtractor(html_template) if html_template else None
     
     def create_presentation(self, outline_data: str) -> BytesIO:
-        """根据大纲创建复旦风格PPT"""
+        """根据大纲和HTML样式创建PPT"""
         if not PPTX_AVAILABLE:
             raise ImportError("python-pptx库未安装，无法生成PPT文件")
         
         # 创建演示文稿
         self.presentation = Presentation()
         
-        # 设置演示文稿的默认样式为复旦风格
-        self._setup_fudan_master_styles()
-        
         # 解析大纲
         slides_data = self._parse_outline(outline_data)
         
-        # 生成复旦风格幻灯片
+        # 生成幻灯片
         for slide_data in slides_data:
-            self._create_fudan_style_slide(slide_data)
+            self._create_styled_slide(slide_data)
         
         # 保存到BytesIO
         ppt_buffer = BytesIO()
@@ -246,12 +222,8 @@ class FudanStylePPTGenerator:
         
         return ppt_buffer
     
-    def _setup_fudan_master_styles(self):
-        """设置复旦大学风格的主样式"""
-        pass  # PPT母版样式设置比较复杂，这里先跳过
-    
     def _parse_outline(self, outline_text: str) -> List[Dict]:
-        """解析大纲文本，保持与原版相同"""
+        """解析大纲文本"""
         slides = []
         current_slide = {}
         current_content = []
@@ -310,13 +282,13 @@ class FudanStylePPTGenerator:
         hex_color = hex_color.strip('#')
         if len(hex_color) == 6:
             return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-        return (0, 85, 162)  # 默认复旦蓝
+        return (51, 51, 51)  # 默认深灰色
     
-    def _create_fudan_style_slide(self, slide_data: Dict):
-        """创建复旦风格的幻灯片"""
+    def _create_styled_slide(self, slide_data: Dict):
+        """创建带样式的幻灯片"""
+        # 根据purpose选择布局
         purpose = slide_data.get('purpose', 'Content')
         
-        # 根据purpose选择布局
         if purpose == 'Title':
             layout = self.presentation.slide_layouts[0]  # 标题布局
         else:
@@ -324,237 +296,126 @@ class FudanStylePPTGenerator:
             
         slide = self.presentation.slides.add_slide(layout)
         
-        # 设置复旦风格背景
-        self._apply_fudan_background(slide)
+        # 应用HTML样式
+        if self.style_extractor:
+            self._apply_html_styles_to_slide(slide)
         
-        # 处理标题
+        # 设置标题
         title_text = slide_data.get('title', '')
-        if title_text and slide.shapes.title:
-            self._create_fudan_title(slide, title_text, purpose)
+        if slide.shapes.title and title_text:
+            title = slide.shapes.title
+            title.text = title_text
+            
+            # 应用标题样式
+            if self.style_extractor:
+                self._apply_text_styles(title.text_frame)
         
-        # 处理内容
+        # 设置内容
         content = slide_data.get('content', [])
-        if content:
-            self._create_fudan_content_card(slide, content, title_text)
+        if content and len(slide.placeholders) > 1:
+            body_shape = slide.placeholders[1]
+            tf = body_shape.text_frame
+            tf.clear()
+            
+            # 设置第一个段落
+            if content:
+                tf.text = content[0]
+                if self.style_extractor:
+                    self._apply_text_styles(tf)
+                
+                # 添加其他段落
+                for item in content[1:]:
+                    p = tf.add_paragraph()
+                    p.text = item
+                    p.level = 0
         
         # 处理视觉元素
         visual = slide_data.get('visual', {})
         if visual and visual.get('type'):
-            self._add_fudan_visual_element(slide, visual)
+            self._add_visual_element(slide, visual)
     
-    def _apply_fudan_background(self, slide):
-        """应用复旦风格背景"""
+    def _apply_html_styles_to_slide(self, slide):
+        """将HTML样式应用到幻灯片"""
         try:
-            if self.fudan_extractor:
-                # 设置浅色背景
-                bg_color = self.fudan_extractor.fudan_colors.get('fudan_bg_light', '#F7FAFC')
+            # 获取背景色并应用
+            bg_color_hex = self.style_extractor.get_primary_bg_color()
+            if bg_color_hex and bg_color_hex != '#ffffff':
+                # 设置背景色
                 background = slide.background
                 fill = background.fill
                 fill.solid()
-                rgb = self._hex_to_rgb(bg_color)
+                rgb = self._hex_to_rgb(bg_color_hex)
                 fill.fore_color.rgb = RGBColor(*rgb)
         except Exception:
-            pass
+            pass  # 如果应用样式失败，使用默认样式
     
-    def _create_fudan_title(self, slide, title_text: str, purpose: str):
-        """创建复旦风格标题"""
-        try:
-            title_shape = slide.shapes.title
-            title_shape.text = title_text
+    def _apply_text_styles(self, text_frame):
+        """应用文本样式"""
+        if not self.style_extractor:
+            return
             
-            # 应用复旦风格
-            text_frame = title_shape.text_frame
+        try:
+            # 获取文本颜色
+            text_color_hex = self.style_extractor.get_primary_text_color()
+            font_name = self.style_extractor.get_primary_font()
             
             for paragraph in text_frame.paragraphs:
-                paragraph.alignment = PP_ALIGN.CENTER
-                
                 for run in paragraph.runs:
-                    # 设置复旦蓝色
-                    if self.fudan_extractor:
-                        fudan_blue = self.fudan_extractor.fudan_colors.get('fudan_blue', '#0055A2')
-                        rgb = self._hex_to_rgb(fudan_blue)
+                    # 应用字体
+                    if font_name:
+                        run.font.name = font_name
+                    
+                    # 应用颜色
+                    if text_color_hex:
+                        rgb = self._hex_to_rgb(text_color_hex)
                         run.font.color.rgb = RGBColor(*rgb)
                     
-                    # 设置字体
-                    if purpose == 'Title':
-                        run.font.size = Pt(44)  # 大标题
-                        run.font.name = 'Microsoft YaHei'  # Windows中文字体
-                    else:
-                        run.font.size = Pt(36)  # 普通标题
-                        run.font.name = 'Microsoft YaHei'
-                    
-                    run.font.bold = True
-        except Exception:
-            pass
-    
-    def _create_fudan_content_card(self, slide, content: List[str], title_text: str):
-        """创建复旦风格的内容卡片"""
-        try:
-            # 删除默认的内容占位符
-            if len(slide.placeholders) > 1:
-                content_placeholder = slide.placeholders[1]
-                slide.shapes._spTree.remove(content_placeholder._element)
-            
-            # 创建复旦风格的内容卡片
-            # 计算位置和大小
-            left = Inches(1)
-            top = Inches(2.5)  # 在标题下方
-            width = Inches(8.5)
-            height = Inches(5)
-            
-            # 创建背景卡片（模拟HTML中的research-card）
-            card_shape = slide.shapes.add_shape(
-                MSO_SHAPE.RECTANGLE,
-                left, top, width, height
-            )
-            
-            # 设置卡片样式（模拟复旦HTML样式）
-            if self.fudan_extractor:
-                # 白色背景
-                card_fill = card_shape.fill
-                card_fill.solid()
-                white_color = self.fudan_extractor.fudan_colors.get('fudan_white', '#FFFFFF')
-                rgb = self._hex_to_rgb(white_color)
-                card_fill.fore_color.rgb = RGBColor(*rgb)
-                
-                # 设置边框（模拟顶部蓝色边框）
-                line = card_shape.line
-                line.color.rgb = RGBColor(*self._hex_to_rgb(
-                    self.fudan_extractor.fudan_colors.get('fudan_blue', '#0055A2')
-                ))
-                line.width = Pt(4)
-            
-            # 创建内容文本框
-            text_left = left + Inches(0.5)
-            text_top = top + Inches(0.5)
-            text_width = width - Inches(1)
-            text_height = height - Inches(1)
-            
-            textbox = slide.shapes.add_textbox(
-                text_left, text_top, text_width, text_height
-            )
-            text_frame = textbox.text_frame
-            text_frame.margin_top = Inches(0.2)
-            text_frame.margin_left = Inches(0.2)
-            text_frame.margin_right = Inches(0.2)
-            text_frame.margin_bottom = Inches(0.2)
-            
-            # 添加内容
-            if content:
-                # 第一段作为主文本
-                text_frame.text = content[0]
-                
-                # 设置第一段样式
-                first_paragraph = text_frame.paragraphs[0]
-                self._apply_fudan_text_style(first_paragraph, is_main_text=True)
-                
-                # 添加其他段落
-                for item in content[1:]:
-                    p = text_frame.add_paragraph()
-                    p.text = f"• {item}"  # 添加项目符号
-                    self._apply_fudan_text_style(p, is_bullet=True)
-                    
-        except Exception as e:
-            # 如果创建卡片失败，回退到简单文本
-            if len(slide.placeholders) > 1:
-                body_shape = slide.placeholders[1]
-                tf = body_shape.text_frame
-                tf.clear()
-                
-                if content:
-                    tf.text = content[0]
-                    for item in content[1:]:
-                        p = tf.add_paragraph()
-                        p.text = item
-                        p.level = 0
-    
-    def _apply_fudan_text_style(self, paragraph, is_main_text=False, is_bullet=False):
-        """应用复旦文本样式"""
-        try:
-            for run in paragraph.runs:
-                # 设置字体
-                run.font.name = 'Microsoft YaHei'
-                
-                if is_main_text:
-                    run.font.size = Pt(20)
-                    # 深色文字
-                    if self.fudan_extractor:
-                        text_color = self.fudan_extractor.fudan_colors.get('fudan_near_black', '#2D3748')
-                        rgb = self._hex_to_rgb(text_color)
-                        run.font.color.rgb = RGBColor(*rgb)
-                elif is_bullet:
+                    # 设置字体大小
                     run.font.size = Pt(18)
-                    # 稍浅的文字
-                    if self.fudan_extractor:
-                        text_color = self.fudan_extractor.fudan_colors.get('fudan_near_black', '#2D3748')
-                        rgb = self._hex_to_rgb(text_color)
-                        run.font.color.rgb = RGBColor(*rgb)
-                else:
-                    run.font.size = Pt(18)
-                
-            # 设置段落间距
-            paragraph.space_after = Pt(12)
-            
+                    
         except Exception:
-            pass
+            pass  # 如果应用样式失败，使用默认样式
     
-    def _add_fudan_visual_element(self, slide, visual):
-        """添加复旦风格的视觉元素"""
+    def _add_visual_element(self, slide, visual):
+        """添加视觉元素"""
         visual_type = visual.get('type', '').strip('`')
         
         if visual_type == 'Symbol':
-            self._add_fudan_symbol_element(slide, visual)
+            self._add_symbol_element(slide, visual)
         elif visual_type == 'Chart':
-            self._add_fudan_chart_element(slide, visual)
+            self._add_chart_element(slide, visual)
         elif visual_type == 'Table':
-            self._add_fudan_table_element(slide, visual)
+            self._add_table_element(slide, visual)
     
-    def _add_fudan_symbol_element(self, slide, visual):
-        """添加复旦风格符号元素"""
+    def _add_symbol_element(self, slide, visual):
+        """添加符号元素"""
         try:
             data_str = visual.get('data', '')
             if 'symbol:' in data_str:
-                # 解析symbol
+                # 简单解析symbol
                 symbol_match = re.search(r'symbol:\s*([^\n]+)', data_str)
                 if symbol_match:
                     symbol = symbol_match.group(1).strip()
                     
-                    # 在右上角添加符号（复旦风格位置）
-                    left = Inches(8.5)
-                    top = Inches(1)
+                    # 在右下角添加符号
+                    left = Inches(8)
+                    top = Inches(6)
                     width = Inches(1)
                     height = Inches(1)
                     
-                    # 创建符号背景圆圈（模拟复旦seal-style）
-                    circle = slide.shapes.add_shape(
-                        MSO_SHAPE.OVAL,
-                        left, top, width, height
-                    )
-                    
-                    # 设置复旦蓝色背景
-                    if self.fudan_extractor:
-                        fill = circle.fill
-                        fill.solid()
-                        fudan_blue = self.fudan_extractor.fudan_colors.get('fudan_blue', '#0055A2')
-                        rgb = self._hex_to_rgb(fudan_blue)
-                        fill.fore_color.rgb = RGBColor(*rgb)
-                    
-                    # 添加符号文本
                     textbox = slide.shapes.add_textbox(left, top, width, height)
                     text_frame = textbox.text_frame
                     text_frame.text = symbol
                     
-                    # 设置符号样式
+                    # 设置大字体
                     for paragraph in text_frame.paragraphs:
-                        paragraph.alignment = PP_ALIGN.CENTER
                         for run in paragraph.runs:
-                            run.font.size = Pt(36)
-                            run.font.color.rgb = RGBColor(255, 255, 255)  # 白色
+                            run.font.size = Pt(48)
         except Exception:
             pass
     
-    def _add_fudan_chart_element(self, slide, visual):
-        """添加复旦风格图表元素"""
+    def _add_chart_element(self, slide, visual):
+        """添加图表元素（显示数据摘要）"""
         try:
             data_str = visual.get('data', '')
             if 'data_summary:' in data_str:
@@ -563,50 +424,25 @@ class FudanStylePPTGenerator:
                 if summary_match:
                     summary = summary_match.group(1).strip()
                     
-                    # 创建复旦风格的数据卡片
+                    # 在中下部添加数据摘要框
                     left = Inches(1)
-                    top = Inches(6)
-                    width = Inches(8.5)
+                    top = Inches(5)
+                    width = Inches(8)
                     height = Inches(1.5)
                     
-                    # 创建背景卡片
-                    card_shape = slide.shapes.add_shape(
-                        MSO_SHAPE.RECTANGLE,
-                        left, top, width, height
-                    )
-                    
-                    # 设置卡片样式
-                    if self.fudan_extractor:
-                        # 浅蓝色背景
-                        card_fill = card_shape.fill
-                        card_fill.solid()
-                        light_blue = self.fudan_extractor.fudan_colors.get('fudan_light_blue', '#A8D8F8')
-                        rgb = self._hex_to_rgb(light_blue)
-                        card_fill.fore_color.rgb = RGBColor(*rgb)
-                    
-                    # 添加数据摘要文本
-                    textbox = slide.shapes.add_textbox(
-                        left + Inches(0.2), top + Inches(0.2), 
-                        width - Inches(0.4), height - Inches(0.4)
-                    )
+                    textbox = slide.shapes.add_textbox(left, top, width, height)
                     text_frame = textbox.text_frame
                     text_frame.text = f"📊 数据要点: {summary}"
                     
-                    # 设置文本样式
-                    for paragraph in text_frame.paragraphs:
-                        for run in paragraph.runs:
-                            run.font.name = 'Microsoft YaHei'
-                            run.font.size = Pt(16)
-                            run.font.bold = True
-                            if self.fudan_extractor:
-                                fudan_blue = self.fudan_extractor.fudan_colors.get('fudan_deep_blue', '#003366')
-                                rgb = self._hex_to_rgb(fudan_blue)
-                                run.font.color.rgb = RGBColor(*rgb)
+                    # 设置样式
+                    if self.style_extractor:
+                        self._apply_text_styles(text_frame)
         except Exception:
             pass
     
-    def _add_fudan_table_element(self, slide, visual):
-        """添加复旦风格表格元素"""
+    def _add_table_element(self, slide, visual):
+        """添加表格元素"""
+        # 暂时简化，只添加表格标题
         try:
             data_str = visual.get('data', '') 
             if 'caption:' in data_str:
@@ -614,44 +450,18 @@ class FudanStylePPTGenerator:
                 if caption_match:
                     caption = caption_match.group(1).strip()
                     
-                    # 添加表格标题卡片
+                    # 添加表格标题
                     left = Inches(1)
-                    top = Inches(5.5)
-                    width = Inches(8.5)
-                    height = Inches(0.8)
+                    top = Inches(4.5)
+                    width = Inches(8)
+                    height = Inches(0.5)
                     
-                    # 创建标题背景
-                    card_shape = slide.shapes.add_shape(
-                        MSO_SHAPE.RECTANGLE,
-                        left, top, width, height
-                    )
-                    
-                    # 设置复旦风格
-                    if self.fudan_extractor:
-                        card_fill = card_shape.fill
-                        card_fill.solid()
-                        fudan_gray = self.fudan_extractor.fudan_colors.get('fudan_light_gray', '#E2E8F0')
-                        rgb = self._hex_to_rgb(fudan_gray)
-                        card_fill.fore_color.rgb = RGBColor(*rgb)
-                    
-                    # 添加标题文本
-                    textbox = slide.shapes.add_textbox(
-                        left + Inches(0.2), top + Inches(0.1),
-                        width - Inches(0.4), height - Inches(0.2)
-                    )
+                    textbox = slide.shapes.add_textbox(left, top, width, height)
                     text_frame = textbox.text_frame
                     text_frame.text = f"📋 {caption}"
                     
-                    # 设置文本样式
-                    for paragraph in text_frame.paragraphs:
-                        for run in paragraph.runs:
-                            run.font.name = 'Microsoft YaHei'
-                            run.font.size = Pt(18)
-                            run.font.bold = True
-                            if self.fudan_extractor:
-                                fudan_blue = self.fudan_extractor.fudan_colors.get('fudan_blue', '#0055A2')
-                                rgb = self._hex_to_rgb(fudan_blue)
-                                run.font.color.rgb = RGBColor(*rgb)
+                    if self.style_extractor:
+                        self._apply_text_styles(text_frame)
         except Exception:
             pass
 
@@ -926,10 +736,10 @@ if st.button("🚀 开始生成汇报", use_container_width=True,
                         try:
                             # 传入HTML模板用于样式提取
                             template_code = html_template.getvalue().decode("utf-8") if html_template else None
-                            ppt_generator = FudanStylePPTGenerator(template_code)
+                            ppt_generator = EnhancedPPTGenerator(template_code)
                             ppt_buffer = ppt_generator.create_presentation(cleaned_outline)
                             st.session_state.results['ppt'] = ppt_buffer.getvalue()
-                            debug_log_container.success("✅ 复旦风格PPT生成成功！")
+                            debug_log_container.success("✅ PPT生成成功！")
                         except Exception as e:
                             st.error(f"PPT生成失败: {e}")
                             debug_log_container.error(f"PPT生成错误: {traceback.format_exc()}")
