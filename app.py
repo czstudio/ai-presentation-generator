@@ -77,7 +77,7 @@ class GeminiProvider(AIProvider):
     """Google Gemini Provider"""
     
     def get_models(self) -> List[str]:
-        return ['gemini-1.5-pro-latest', 'gemini-1.5-flash-latest', 'gemini-1.5-pro']
+        return ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
     
     def validate_key(self, api_key: str) -> bool:
         if not GEMINI_AVAILABLE or not api_key:
