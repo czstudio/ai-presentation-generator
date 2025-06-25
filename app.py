@@ -191,29 +191,40 @@ def extract_clean_outline(raw_output, debug_log_container):
 # ## NEW: 终极清理函数，移除所有AI可能添加的无关内容 ##
 def final_cleanup(raw_html, debug_log_container):
     """
-    对最终的HTML进行强力清理，确保它是一个纯净的HTML文档。
+    对最终的HTML进行终极提取，确保它是一个纯净的HTML文档。
+    该函数会精确提取从<!DOCTYPE html>到</html>之间的所有内容。
     """
     try:
-        # 1. 寻找HTML的真正起点
-        html_start_pos = raw_html.find("<!DOCTYPE html>")
-        if html_start_pos == -1:
-            debug_log_container.warning("⚠️ AI返回的最终结果缺少`<!DOCTYPE html>`声明，将尝试寻找`<html>`标签。")
-            html_start_pos = raw_html.find("<html")
-            if html_start_pos == -1:
-                 debug_log_container.error("❌ AI返回的结果中连`<html>`都找不到，无法清理。")
-                 return None
+        debug_log_container.info("正在执行终极HTML清理和提取...")
         
-        # 2. 截取从HTML真正起点开始的所有内容
-        html_content = raw_html[html_start_pos:]
+        # 1. 使用正则表达式寻找HTML的真正起点和终点
+        # re.DOTALL 使得'.'可以匹配包括换行符在内的所有字符
+        # re.IGNORECASE 确保<!DOCTYPE html>不区分大小写
+        match = re.search(r"(<!DOCTYPE html>.*</html>)", raw_html, re.DOTALL | re.IGNORECASE)
         
-        # 3. 移除可能存在的Markdown代码块标记
-        cleaned_html = html_content.replace("```html", "").replace("```", "").strip()
-        
-        debug_log_container.success("✅ 已对最终HTML进行清理，移除了所有前导无关内容。")
-        return cleaned_html
+        if match:
+            # 2. 如果找到了匹配项，直接提取出这个纯净的HTML块
+            clean_html = match.group(1).strip()
+            debug_log_container.success("✅ 已通过终极提取程序，获得纯净的HTML文档。")
+            return clean_html
+        else:
+            # 3. 如果正则匹配失败（非常罕见的情况），作为备用方案，尝试手动查找
+            debug_log_container.warning("⚠️ 正则表达式未能匹配完整的HTML文档，尝试备用提取方案...")
+            start_pos = raw_html.lower().find("<!doctype html>")
+            end_pos = raw_html.lower().rfind("</html>")
+            
+            if start_pos != -1 and end_pos != -1:
+                end_pos_inclusive = end_pos + len("</html>")
+                clean_html = raw_html[start_pos:end_pos_inclusive].strip()
+                debug_log_container.success("✅ 已通过备用方案提取出HTML。")
+                return clean_html
+            else:
+                debug_log_container.error("❌ 终极提取失败: 在AI响应中找不到有效的`<!DOCTYPE html>...</html>`结构。")
+                return None
+
     except Exception:
-        debug_log_container.error(f"最终清理时出错: {traceback.format_exc()}")
-        return raw_html # 清理失败时返回原始文本
+        debug_log_container.error(f"终极清理时出错: {traceback.format_exc()}")
+        return None # 清理失败时返回None
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="AI学术汇报生成器", page_icon="🎓", layout="wide")
