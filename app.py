@@ -274,7 +274,7 @@ with st.sidebar:
                            value=default_key, 
                            type="password",
                            help="💡 提示：您可以在代码顶部的 DEFAULT_GEMINI_API_KEY 中预设API Key")
-    model_options = ['gemini-2.5-pro', 'gemini-2.0-pro','gemini-2.5-flash','gemini-2.0-flash']
+    model_options = [ 'gemini-2.5-flash','gemini-2.0-flash']
     selected_model = st.selectbox("选择AI模型", model_options, index=0)
 
 col1, col2 = st.columns(2)
