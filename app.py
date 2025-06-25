@@ -84,7 +84,7 @@ Data: null
 # ## 代码融合器 (终极强化版 - 基于您成功的原始流程) ##
 CODE_GENERATION_PROMPT_TEMPLATE = """
 角色 (Role):
-你是一位精通HTML、CSS和JavaScript的前端开发专家，拥有像素级的代码保真能力。你的核心任务是将一份结构化的Markdown大纲，无损地、精确地与一个预定义的HTML模板相结合，动态生成最终的、可直接运行的、高度专业的HTML文件。
+你是一位精通HTML、CSS和JavaScript的前端开发专家，拥有像素级的代码保真能力。你的核心任务是将一份结构化的Markdown大纲，无损地、精确地与一个预定义的HTML模板相结合，动态生成最终的、可直接运行的HTML文件。
 
 核心任务 (Core Task):
 你将收到两份输入：
@@ -101,6 +101,12 @@ CODE_GENERATION_PROMPT_TEMPLATE = """
     *   所有`<img>`标签及其`src`属性，尤其是Base64编码的图片。
 4.  **【绝对禁止】:** 你的最终输出 **绝对不能** 包含任何解释性文字或Markdown代码块标记。输出必须是一个纯粹的HTML文本，直接以 `<!DOCTYPE html>` 开头，并以 `</html>` 结尾。
 
+**【重要输出要求】:**
+- 直接输出完整的HTML代码，不要添加任何说明文字
+- 不要使用```html或```等Markdown代码块标记
+- 不要在HTML前后添加任何解释性内容
+- 确保输出以<!DOCTYPE html>开始，以</html>结束
+
 指令 (Instruction):
 以下是用户提供的 **PPT大纲 (PPT Outline)** 和 **HTML模板 (HTML Template)**。请立即开始工作，严格遵循以上所有规则，特别是保护脚本和样式的铁律，将大纲内容与模板代码完美融合，生成最终的、完整的、专业级的HTML文件。
 """
@@ -108,16 +114,12 @@ CODE_GENERATION_PROMPT_TEMPLATE = """
 # --- 所有Agent函数 (保持健壮) ---
 def parse_pdf(uploaded_file, debug_log_container):
     try:
-        if uploaded_file is None:
-            debug_log_container.error("❌ 传入的PDF文件对象为None。")
-            return None
         file_bytes = uploaded_file.getvalue()
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         full_text = "".join(page.get_text() + "\n" for page in doc)
         debug_log_container.write(f"✅ PDF解析成功。总计 {len(full_text):,} 个字符。")
         return full_text
-    except Exception as e:
-        st.error(f"PDF解析失败: {e}")
+    except Exception:
         debug_log_container.error(f"PDF解析时出现异常: {traceback.format_exc()}")
         return None
 
@@ -152,20 +154,21 @@ def call_gemini(api_key, prompt_text, ui_placeholder, model_name, debug_log_cont
                     collected_chunks.append(text_part)
                     yield text_part
 
-        response_stream = model.generate_content(prompt_text, stream=True)
-        # 只有在提供了UI占位符时才进行流式写入，避免最终调用时出现无关UI元素
+        # 只有在提供了UI占位符时才进行流式写入
         if ui_placeholder:
+            response_stream = model.generate_content(prompt_text, stream=True)
             ui_placeholder.write_stream(stream_and_collect(response_stream))
         else:
-            # 如果不提供UI占位符，则静默收集所有块
-            for _ in stream_and_collect(response_stream):
-                pass
+            # 如果不提供UI占位符，则直接生成，避免在UI上产生不必要的输出
+            response = model.generate_content(prompt_text)
+            if hasattr(response, 'text'):
+                collected_chunks.append(response.text)
         
         full_response_str = "".join(collected_chunks)
         debug_log_container.write(f"✅ AI响应成功完成。收集到 {len(full_response_str):,} 个字符。")
         return full_response_str
-    except Exception:
-        error_message = f"🚨 **AI调用失败!** 请检查调试日志。"
+    except Exception as e:
+        error_message = f"🚨 **AI调用失败!** 请检查调试日志。\n\n**错误详情:** {e}"
         if ui_placeholder:
             ui_placeholder.error(error_message)
         else:
@@ -191,40 +194,73 @@ def extract_clean_outline(raw_output, debug_log_container):
         debug_log_container.error(f"提取大纲时发生意外错误: {traceback.format_exc()}")
         return None
 
-# ## NEW: 这是终极版的清理/提取函数 ##
+# ## 安全版最终清理函数 - 保护HTML模板内容 ##
 def final_cleanup(raw_html, debug_log_container):
     """
-    对最终的HTML进行终极提取，确保它是一个纯净的HTML文档。
-    该函数会精确提取从<!DOCTYPE html>到</html>之间的所有内容。
+    对最终的HTML进行安全清理，只清理HTML文档外部的多余内容。
+    避免破坏HTML模板的原有格式和内容。
     """
     try:
-        debug_log_container.info("正在执行终极HTML清理和提取...")
+        debug_log_container.write(f"开始清理HTML，原始长度: {len(raw_html):,} 字符")
         
-        # 使用正则表达式寻找从<!DOCTYPE html>开始，到</html>结束的所有内容
-        match = re.search(r"<!DOCTYPE html>.*</html>", raw_html, re.DOTALL | re.IGNORECASE)
+        # 1. 寻找HTML文档的真正起点和终点
+        html_start_pos = raw_html.find("<!DOCTYPE html>")
+        if html_start_pos == -1:
+            debug_log_container.warning("⚠️ 未找到`<!DOCTYPE html>`，尝试寻找`<html`标签")
+            html_start_pos = raw_html.find("<html")
+            if html_start_pos == -1:
+                debug_log_container.error("❌ 未找到HTML起始标签")
+                return None
         
-        if match:
-            clean_html = match.group(0).strip()
-            debug_log_container.success("✅ 已通过终极提取程序，获得纯净的HTML文档。")
-            return clean_html
-        else:
-            debug_log_container.error("❌ 终极提取失败: 在AI响应中找不到有效的`<!DOCTYPE html>...</html>`结构。")
+        html_end_pos = raw_html.rfind("</html>")
+        if html_end_pos == -1:
+            debug_log_container.error("❌ 未找到HTML结束标签")
             return None
-    except Exception:
-        debug_log_container.error(f"终极清理时出错: {traceback.format_exc()}")
+        
+        # 2. 只清理HTML文档前面可能存在的说明文字
+        text_before_html = raw_html[:html_start_pos].strip()
+        if text_before_html:
+            debug_log_container.write(f"发现HTML前的内容: {text_before_html[:200]}...")
+            # 只移除明显的Markdown标记和说明文字
+            if any(marker in text_before_html.lower() for marker in ['```', '以下是', '这是', '生成的']):
+                debug_log_container.write("移除HTML前的说明文字")
+        
+        # 3. 提取纯净的HTML内容（从<!DOCTYPE html>到</html>）
+        html_content = raw_html[html_start_pos:html_end_pos + 7]  # +7 for "</html>"
+        
+        # 4. 只清理HTML文档末尾可能存在的多余内容
+        text_after_html = raw_html[html_end_pos + 7:].strip()
+        if text_after_html:
+            debug_log_container.write(f"发现HTML后的内容: {text_after_html[:100]}...")
+            # 如果HTML后面还有内容，说明可能有多余的说明文字，直接忽略
+        
+        # 5. 基本格式验证
+        html_content = html_content.strip()
+        if not (html_content.startswith("<!DOCTYPE html>") or html_content.startswith("<html")):
+            debug_log_container.error("❌ 清理后的HTML格式不正确")
+            return None
+            
+        if not html_content.endswith("</html>"):
+            debug_log_container.error("❌ 清理后的HTML结尾不正确")
+            return None
+        
+        debug_log_container.success(f"✅ HTML清理完成！最终长度: {len(html_content):,} 字符")
+        debug_log_container.write(f"HTML开头: {html_content[:100]}...")
+        debug_log_container.write(f"HTML结尾: ...{html_content[-50:]}")
+        
+        return html_content
+        
+    except Exception as e:
+        debug_log_container.error(f"最终清理时出错: {traceback.format_exc()}")
         return None
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="AI学术汇报生成器", page_icon="🎓", layout="wide")
-st.title("🎓 AI学术汇报一键生成器 (最终版)")
+st.title("🎓 AI学术汇报一键生成器 (最终修复版)")
 with st.sidebar:
     st.header("⚙️ 配置")
     api_key = st.text_input("请输入您的Google Gemini API Key", type="password")
-    model_options = [
-        'gemini-2.0-flash',
-        'gemini-2.5-flash',
-        'gemini-2.5-pro'
-    ]
+    model_options = ['gemini-1.5-pro-latest', 'gemini-1.5-flash-latest']
     selected_model = st.selectbox("选择AI模型", model_options, index=0)
 
 col1, col2 = st.columns(2)
@@ -234,12 +270,7 @@ with col2: html_template = st.file_uploader("2. 上传您的**原始**HTML模板
 if 'final_html' not in st.session_state: st.session_state.final_html = None
 
 # --- 主流程 (回归您成功的原始逻辑) ---
-if st.button("🚀 开始生成汇报", use_container_width=True):
-    # ## CORE FIX: 增加对文件上传的最终验证 ##
-    if not api_key or not pdf_file or not html_template:
-        st.error("❌ 请确保已输入API Key，并已上传PDF和HTML模板文件！")
-        st.stop()
-
+if st.button("🚀 开始生成汇报", use_container_width=True, disabled=(not api_key or not pdf_file or not html_template)):
     st.session_state.final_html = None
     progress_container = st.container()
     progress_text = progress_container.empty()
@@ -270,8 +301,10 @@ if st.button("🚀 开始生成汇报", use_container_width=True):
             if cleaned_outline:
                 progress_bar.progress(70)
                 
+                # ## 这是最终的核心步骤，完全模拟您成功的手动流程 ##
                 progress_text.text(f"步骤 3/3: 正在融合大纲与模板生成最终文件...")
                 st.info("ℹ️ AI正在执行最终的全文重写，这可能需要一些时间...")
+                
                 template_code = html_template.getvalue().decode("utf-8")
                 
                 final_prompt = "".join([
@@ -282,10 +315,12 @@ if st.button("🚀 开始生成汇报", use_container_width=True):
                     template_code
                 ])
                 
-                with st.spinner("AI正在生成最终HTML，这个过程不会在主界面显示中间过程，请稍候..."):
+                # ## 修改：最终调用不显示在主UI上，避免出现"短横线"等无关内容 ##
+                with st.spinner("AI正在生成最终HTML，请稍候..."):
                     final_html_raw = call_gemini(api_key, final_prompt, None, selected_model, debug_log_container)
 
                 if final_html_raw:
+                    # ## 使用强化版清理函数彻底解决HTML显示问题 ##
                     final_html_code = final_cleanup(final_html_raw, debug_log_container)
 
                     if final_html_code and "</html>" in final_html_code.lower():
