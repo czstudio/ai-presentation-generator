@@ -2,3 +2,5 @@ streamlit
 google-generativeai
 PyMuPDF
 python-pptx
+openai 
+anthropic 
